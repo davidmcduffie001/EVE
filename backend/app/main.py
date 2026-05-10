@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.config import Settings, get_settings
 from app.core.database import create_sessionmaker
 from app.core.logging import configure_logging
+from app.routers.admin import create_admin_router
 from app.routers.auth import create_auth_router
 
 
@@ -39,6 +40,7 @@ def create_app(
         return {"status": "ok", "service": "eve-api"}
 
     app.include_router(create_auth_router(active_settings, active_sessionmaker))
+    app.include_router(create_admin_router(active_settings, active_sessionmaker))
 
     return app
 

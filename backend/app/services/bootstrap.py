@@ -4,30 +4,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.base import ExploitIntelSource, Role, User
+from app.services.auth.permissions import BUILTIN_ROLE_PERMISSIONS
 from app.services.auth.security import PasswordHasher
-
-BUILTIN_ROLE_PERMISSIONS: dict[str, list[str]] = {
-    "Admin": [
-        "findings:read",
-        "findings:export",
-        "targets:manage",
-        "intel:manage",
-        "users:manage",
-        "roles:manage",
-        "audit:read",
-        "reports:export",
-        "scanners:manage",
-    ],
-    "Analyst": [
-        "findings:read",
-        "findings:export",
-        "reports:export",
-    ],
-    "Read-Only": [
-        "findings:read",
-        "audit:read",
-    ],
-}
 
 BUILTIN_INTEL_SOURCES: dict[str, dict[str, str | bool]] = {
     "nvd": {

@@ -38,6 +38,9 @@ Phase 1 does not include exploit execution, execution credentials, or execution-
 - A small repository primitive supports basic async model persistence.
 - Local authentication primitives now cover password hashing, signed access tokens, and revocable refresh sessions.
 - The first auth API endpoints support login, refresh-token rotation, logout, current-user lookup, secure browser cookies, and CSRF checks for cookie-authenticated state changes.
+- RBAC has a central permission registry and reusable FastAPI dependencies for route-level permission enforcement.
+- The administrative audit-log API exposes paginated tamper-evident audit records to users with `audit:read`.
+- Authentication success/failure, refresh failures, logout, and permission denials are written to the audit log with redacted metadata and hash-chain integrity fields.
 
 ## Local Development
 
