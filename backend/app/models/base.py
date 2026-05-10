@@ -45,6 +45,7 @@ class User(Base):
         Enum("dark", "light", name="theme_preference"), default="dark"
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class RefreshSession(Base):

@@ -56,6 +56,8 @@ def create_current_user_dependency(
             raise_auth_required()
 
         user, role = user_with_role
+        if user.disabled_at is not None:
+            raise_auth_required()
         return serialize_authenticated_user(user, role)
 
     return current_user

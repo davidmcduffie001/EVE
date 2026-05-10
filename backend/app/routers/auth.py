@@ -86,6 +86,15 @@ def create_auth_router(
             raise _invalid_credentials()
 
         user, role = user_with_role
+        if user.disabled_at is not None:
+            await _record_login_failure(
+                session=session,
+                http_request=http_request,
+                email=request.email,
+                reason="disabled_user",
+                user_id=user.id,
+            )
+            raise _invalid_credentials()
         if not password_hasher.verify_password(request.password, user.password_hash):
             await _record_login_failure(
                 session=session,
