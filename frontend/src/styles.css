@@ -239,27 +239,26 @@ button {
 .theme-toggle {
   position: relative;
   display: inline-grid;
-  grid-template-columns: 16px 18px 16px;
-  align-items: center;
-  gap: 6px;
-  width: 82px;
+  grid-template-columns: 1fr 1fr;
+  place-items: center;
+  width: 68px;
   height: 40px;
   border: 1px solid #283235;
   border-radius: 8px;
   background: #12191b;
   color: #c8d4d7;
   cursor: pointer;
-  padding: 0 10px;
+  padding: 0 8px;
 }
 
 .theme-toggle span {
   position: absolute;
-  top: 7px;
-  left: 8px;
-  width: 26px;
-  height: 24px;
+  top: 6px;
+  left: 6px;
+  width: 28px;
+  height: 26px;
   border-radius: 7px;
-  background: #253233;
+  background: #243133;
   transform: translateX(0);
   transition:
     background 150ms ease,
@@ -267,8 +266,8 @@ button {
 }
 
 .theme-toggle[aria-pressed="true"] span {
-  background: #dce8ea;
-  transform: translateX(38px);
+  background: #d5e5e6;
+  transform: translateX(28px);
 }
 
 .theme-toggle svg {
@@ -737,6 +736,12 @@ tbody tr:hover {
   color: #13766e;
 }
 
+.theme-light .icon-button,
+.theme-light .theme-toggle,
+.theme-light .secondary-action {
+  color: #294147;
+}
+
 .theme-light .search-field input,
 .theme-light .settings-form input,
 .theme-light .settings-form select {
@@ -747,8 +752,36 @@ tbody tr:hover {
 .theme-light .settings-facts div,
 .theme-light .connector-steps li,
 .theme-light .activity-list li {
-  background: #eef5f5;
+  background: #f3f8f8;
   color: #1c2a2e;
+}
+
+.theme-light tbody tr:hover {
+  background: #eef7f6;
+}
+
+.theme-light .secondary-action {
+  border-color: #bfd3d7;
+  background: #edf6f6;
+}
+
+.theme-light .severity-pill.critical {
+  background: #ffe4e4;
+  color: #9b2525;
+}
+
+.theme-light .severity-pill.high {
+  background: #fff0d6;
+  color: #8b520a;
+}
+
+.theme-light .severity-pill.medium {
+  background: #f5f0c6;
+  color: #685d0f;
+}
+
+.theme-light .bar-track {
+  background: #dde9eb;
 }
 
 .theme-light th,
