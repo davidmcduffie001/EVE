@@ -9,6 +9,7 @@ from typing import Literal
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
@@ -302,11 +303,19 @@ async def _get_or_create_preferences(
     session: AsyncSession,
     user: User,
 ) -> UserPreference:
-    preferences = await session.get(UserPreference, user.id)
+    user_id = user.id
+    preferences = await session.get(UserPreference, user_id)
     if preferences is None:
-        preferences = UserPreference(user_id=user.id)
+        preferences = UserPreference(user_id=user_id)
         session.add(preferences)
-        await session.flush()
+        try:
+            await session.flush()
+        except IntegrityError:
+            await session.rollback()
+            await session.refresh(user)
+            preferences = await session.get(UserPreference, user_id)
+            if preferences is None:
+                raise
     return preferences
 
 

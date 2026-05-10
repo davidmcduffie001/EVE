@@ -1,5 +1,6 @@
 """Request-level tests for user settings endpoints."""
 
+from concurrent.futures import ThreadPoolExecutor
 from uuid import uuid4
 
 import anyio
@@ -7,12 +8,14 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
 from app.core.database import create_sessionmaker
 from app.main import create_app
-from app.models.base import Base, RefreshSession, Role, User
+from app.models.base import Base, RefreshSession, Role, User, UserPreference
+from app.routers.settings import _get_or_create_preferences
 from app.services.auth.security import PasswordHasher
 from app.services.auth.sessions import RefreshSessionService
 
@@ -230,3 +233,54 @@ def test_preferences_round_trip(
         "default_landing_page": "findings",
         "table_state": {"findings": {"page_size": 100}},
     }
+
+
+def test_concurrent_initial_preference_reads_share_one_row(
+    settings_app: tuple[FastAPI, async_sessionmaker[AsyncSession]],
+) -> None:
+    """Duplicate first-time preference reads should not race into a 500."""
+    app, _sessionmaker = settings_app
+
+    def read_preferences() -> int:
+        with TestClient(app) as client:
+            _login(client)
+            return client.get("/settings/preferences").status_code
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        statuses = list(executor.map(lambda _index: read_preferences(), range(2)))
+
+    assert statuses == [200, 200]
+
+
+def test_preference_creation_recovers_from_duplicate_insert_race() -> None:
+    """A duplicate insert during first preference creation should re-read the row."""
+    user = User(id=uuid4(), email="admin@example.test", display_name="Admin User", role_id=uuid4())
+    existing_preferences = UserPreference(user_id=user.id, timezone="UTC")
+
+    class RacingPreferenceSession:
+        def __init__(self) -> None:
+            self.rollback_called = False
+            self.get_calls = 0
+
+        async def get(self, _model: type[UserPreference], _key: object) -> UserPreference | None:
+            self.get_calls += 1
+            return None if self.get_calls == 1 else existing_preferences
+
+        def add(self, _preferences: UserPreference) -> None:
+            return None
+
+        async def flush(self) -> None:
+            raise IntegrityError("insert", {}, Exception("duplicate"))
+
+        async def rollback(self) -> None:
+            self.rollback_called = True
+
+        async def refresh(self, _user: User) -> None:
+            return None
+
+    session = RacingPreferenceSession()
+
+    preferences = anyio.run(_get_or_create_preferences, session, user)
+
+    assert preferences is existing_preferences
+    assert session.rollback_called is True
