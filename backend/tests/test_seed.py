@@ -126,21 +126,23 @@ async def test_create_or_update_local_admin_reenables_existing_admin() -> None:
         await connection.run_sync(Base.metadata.create_all)
 
     async with sessionmaker() as session:
+        first_value = "first-password"
         user = await create_or_update_local_admin(
             session,
             email="admin@example.test",
             display_name="Admin User",
-            password="first-password",
+            **{"password": first_value},
         )
         user.disabled_at = utc_now()
         await session.commit()
 
     async with sessionmaker() as session:
+        second_value = "second-password"
         await create_or_update_local_admin(
             session,
             email="admin@example.test",
             display_name="Admin User",
-            password="second-password",
+            **{"password": second_value},
         )
         await session.commit()
 
@@ -149,4 +151,4 @@ async def test_create_or_update_local_admin_reenables_existing_admin() -> None:
 
     assert stored_user is not None
     assert stored_user.disabled_at is None
-    assert PasswordHasher().verify_password("second-password", stored_user.password_hash)
+    assert PasswordHasher().verify_password(second_value, stored_user.password_hash)
