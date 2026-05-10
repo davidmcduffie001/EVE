@@ -5,9 +5,9 @@ from __future__ import annotations
 import hmac
 import secrets
 from datetime import UTC, datetime, timedelta
+from html import escape
 from urllib.parse import urlencode
 from uuid import UUID
-from xml.sax.saxutils import quoteattr
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -279,7 +279,7 @@ def create_auth_router(
                 '<?xml version="1.0" encoding="UTF-8"?>',
                 (
                     '<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" '
-                    f"entityID={quoteattr(metadata_url)}>"
+                    f'entityID="{_xml_attr(metadata_url)}">'
                 ),
                 (
                     '  <SPSSODescriptor protocolSupportEnumeration='
@@ -288,7 +288,7 @@ def create_auth_router(
                 (
                     '    <AssertionConsumerService '
                     'Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" '
-                    f"Location={quoteattr(acs_url)} index=\"0\" isDefault=\"true\" />"
+                    f'Location="{_xml_attr(acs_url)}" index="0" isDefault="true" />'
                 ),
                 "  </SPSSODescriptor>",
                 "</EntityDescriptor>",
@@ -533,6 +533,10 @@ def _oidc_authorization_url(
 
 def _api_url(settings: Settings, path: str) -> str:
     return f"{str(settings.api_base_url).rstrip('/')}{path}"
+
+
+def _xml_attr(value: str) -> str:
+    return escape(value, quote=True)
 
 
 def _clear_auth_cookies(response: Response, settings: Settings) -> None:
