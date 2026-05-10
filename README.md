@@ -1,3 +1,7 @@
+![CI](https://github.com/davidmcduffie001/EVE/actions/workflows/ci.yml/badge.svg)
+
+<img width="2557" height="1274" alt="brave_screenshot_localhost" src="https://github.com/user-attachments/assets/5da5f69c-d5e8-44d0-a80a-91cc28be63d5" />
+
 # EVE
 
 EVE, the Exploit Validation Engine, is an on-premises security platform for aggregating scanner findings and enriching them with vulnerability and exploit metadata.
