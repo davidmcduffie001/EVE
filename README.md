@@ -49,6 +49,28 @@ npm test -- --run
 npm run build
 ```
 
+For local auth testing without PostgreSQL, bootstrap a SQLite development database and
+create the documented test admin account:
+
+```bash
+EVE_DATABASE_URL=sqlite+aiosqlite:///./eve-dev.sqlite3 \
+  .venv/bin/python -m app.cli dev-bootstrap
+```
+
+Then start the API on port `8001`:
+
+```bash
+EVE_DATABASE_URL=sqlite+aiosqlite:///./eve-dev.sqlite3 \
+  .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8001
+```
+
+Local test account:
+
+```text
+Email: admin@example.test
+Password: correct-password
+```
+
 The frontend development server currently runs on port `8000`:
 
 ```bash

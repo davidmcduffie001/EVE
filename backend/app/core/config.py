@@ -13,14 +13,14 @@ class Settings(BaseSettings):
 
     env: str = "development"
     log_level: str = "INFO"
-    public_base_url: AnyHttpUrl = "http://localhost:5173"
-    api_base_url: AnyHttpUrl = "http://localhost:8000"
+    public_base_url: AnyHttpUrl = "http://localhost:8000"
+    api_base_url: AnyHttpUrl = "http://localhost:8001"
     database_url: str = "postgresql+asyncpg://eve:eve_dev_password@127.0.0.1:5432/eve_dev"
     redis_url: str = "redis://127.0.0.1:6379/0"
     celery_broker_url: str = "redis://127.0.0.1:6379/1"
     celery_result_backend: str = "redis://127.0.0.1:6379/2"
     cookie_secure: bool = False
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:8000"])
     auth_secret_key: str = Field(
         default_factory=lambda: "eve-development-auth-signing-key-change-before-production"
     )
