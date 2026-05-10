@@ -63,7 +63,6 @@ type UserPreferences = {
   theme_preference: ThemePreference;
   timezone: string;
   date_format: string;
-  default_landing_page: string;
   table_state: Record<string, unknown>;
 };
 
@@ -135,6 +134,24 @@ const activityFeed = [
   "Admin User refreshed the browser session.",
 ];
 
+const timezoneOptions = [
+  { value: "UTC", label: "UTC" },
+  { value: "America/New_York", label: "Eastern Time" },
+  { value: "America/Chicago", label: "Central Time" },
+  { value: "America/Denver", label: "Mountain Time" },
+  { value: "America/Los_Angeles", label: "Pacific Time" },
+  { value: "Europe/London", label: "London" },
+  { value: "Europe/Berlin", label: "Central Europe" },
+  { value: "Asia/Tokyo", label: "Tokyo" },
+];
+
+const dateFormatOptions = [
+  { value: "YYYY-MM-DD", label: "YYYY-MM-DD" },
+  { value: "MM/DD/YYYY", label: "MM/DD/YYYY" },
+  { value: "DD/MM/YYYY", label: "DD/MM/YYYY" },
+  { value: "MMM D, YYYY", label: "MMM D, YYYY" },
+];
+
 export function App({ initialUser = null, initialView = "dashboard" }: AppProps) {
   const [user, setUser] = useState<AuthenticatedUser | null>(
     initialUser ?? getPreviewUser(getCurrentSearch(), import.meta.env.DEV),
@@ -146,7 +163,6 @@ export function App({ initialUser = null, initialView = "dashboard" }: AppProps)
     theme_preference: "dark",
     timezone: "UTC",
     date_format: "YYYY-MM-DD",
-    default_landing_page: "dashboard",
     table_state: {},
   });
 
@@ -175,6 +191,7 @@ export function App({ initialUser = null, initialView = "dashboard" }: AppProps)
         body: JSON.stringify({
           ...preferences,
           theme_preference: nextTheme,
+          default_landing_page: "dashboard",
         }),
       });
       setPreferences(nextPreferences);
@@ -564,7 +581,7 @@ function SettingsWorkspace({
           theme_preference: preferences.theme_preference,
           timezone: formData.get("timezone"),
           date_format: formData.get("date_format"),
-          default_landing_page: formData.get("default_landing_page"),
+          default_landing_page: "dashboard",
           table_state: preferences.table_state,
         }),
       });
@@ -647,22 +664,26 @@ function SettingsWorkspace({
         <form
           className="settings-form settings-form-inline"
           onSubmit={handlePreferencesSubmit}
-          key={`${preferences.timezone}-${preferences.default_landing_page}`}
+          key={`${preferences.timezone}-${preferences.date_format}`}
         >
           <label>
             Timezone
-            <input name="timezone" defaultValue={preferences.timezone} required />
+            <select name="timezone" defaultValue={preferences.timezone}>
+              {timezoneOptions.map((option) => (
+                <option value={option.value} key={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
           </label>
           <label>
             Date format
-            <input name="date_format" defaultValue={preferences.date_format} required />
-          </label>
-          <label>
-            Landing page
-            <select name="default_landing_page" defaultValue={preferences.default_landing_page}>
-              <option value="dashboard">Dashboard</option>
-              <option value="findings">Findings</option>
-              <option value="settings">Settings</option>
+            <select name="date_format" defaultValue={preferences.date_format}>
+              {dateFormatOptions.map((option) => (
+                <option value={option.value} key={option.value}>
+                  {option.label}
+                </option>
+              ))}
             </select>
           </label>
           <FormStatus state={preferenceState} />
