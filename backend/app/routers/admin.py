@@ -33,6 +33,8 @@ from app.services.auth.dependencies import (
 from app.services.auth.permissions import PERMISSIONS
 from app.services.auth.security import PasswordHasher
 
+BUILT_IN_ADMIN_EMAIL = "admin@example.test"
+
 
 class AuditLogEntryResponse(BaseModel):
     """Audit log entry returned to administrators."""
@@ -306,6 +308,11 @@ def create_admin_router(
                 )
             user.role_id = role.id
         if payload.disabled is not None:
+            if payload.disabled and user.email == BUILT_IN_ADMIN_EMAIL:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Built-in Admin user cannot be disabled",
+                )
             user.disabled_at = utc_now() if payload.disabled else None
 
         role = await session.get(Role, user.role_id)

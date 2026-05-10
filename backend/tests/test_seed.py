@@ -4,7 +4,7 @@ import pytest
 from sqlalchemy import select
 
 from app.core.database import create_sessionmaker
-from app.models.base import Base, ExploitIntelSource, Role, User
+from app.models.base import Base, ExploitIntelSource, Role, User, utc_now
 from app.services.auth.security import PasswordHasher
 from app.services.bootstrap import (
     create_or_update_local_admin,
@@ -116,3 +116,37 @@ async def test_create_or_update_local_admin_is_idempotent() -> None:
     assert len(users) == 1
     assert users[0].display_name == "Updated Admin"
     assert PasswordHasher().verify_password(second_value, users[0].password_hash)
+
+
+@pytest.mark.asyncio
+async def test_create_or_update_local_admin_reenables_existing_admin() -> None:
+    """Local admin bootstrap recovers from a disabled built-in Admin account."""
+    sessionmaker = create_sessionmaker("sqlite+aiosqlite:///:memory:")
+    async with sessionmaker.kw["bind"].begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    async with sessionmaker() as session:
+        user = await create_or_update_local_admin(
+            session,
+            email="admin@example.test",
+            display_name="Admin User",
+            password="first-password",
+        )
+        user.disabled_at = utc_now()
+        await session.commit()
+
+    async with sessionmaker() as session:
+        await create_or_update_local_admin(
+            session,
+            email="admin@example.test",
+            display_name="Admin User",
+            password="second-password",
+        )
+        await session.commit()
+
+    async with sessionmaker() as session:
+        stored_user = await session.scalar(select(User).where(User.email == "admin@example.test"))
+
+    assert stored_user is not None
+    assert stored_user.disabled_at is None
+    assert PasswordHasher().verify_password("second-password", stored_user.password_hash)

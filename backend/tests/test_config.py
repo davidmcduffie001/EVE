@@ -10,3 +10,4 @@ def test_development_ports_match_local_frontend_and_backend() -> None:
     assert str(settings.public_base_url) == "http://localhost:8000/"
     assert str(settings.api_base_url) == "http://localhost:8001/"
     assert "http://localhost:8000" in settings.cors_origins
+    assert "http://127.0.0.1:8000" in settings.cors_origins

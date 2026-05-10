@@ -186,3 +186,24 @@ def test_admin_can_disable_user_and_disabled_user_cannot_login(
     assert disable_response.status_code == 200
     assert disable_response.json()["disabled"] is True
     assert login_response.status_code == 401
+
+
+def test_built_in_admin_user_cannot_be_disabled(
+    admin_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    """The built-in local Admin account must remain enabled."""
+    client, _sessionmaker = admin_client
+    _login(client)
+    users_response = client.get("/admin/users")
+    admin = next(
+        user for user in users_response.json()["items"] if user["email"] == "admin@example.test"
+    )
+
+    response = client.patch(
+        f"/admin/users/{admin['id']}",
+        json={"disabled": True},
+        headers=_csrf_headers(client),
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Built-in Admin user cannot be disabled"}

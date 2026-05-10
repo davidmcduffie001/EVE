@@ -20,7 +20,9 @@ class Settings(BaseSettings):
     celery_broker_url: str = "redis://127.0.0.1:6379/1"
     celery_result_backend: str = "redis://127.0.0.1:6379/2"
     cookie_secure: bool = False
-    cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:8000"])
+    cors_origins: list[str] = Field(
+        default_factory=lambda: ["http://localhost:8000", "http://127.0.0.1:8000"]
+    )
     auth_secret_key: str = Field(
         default_factory=lambda: "eve-development-auth-signing-key-change-before-production"
     )

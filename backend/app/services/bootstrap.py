@@ -88,5 +88,6 @@ async def create_or_update_local_admin(
     user.display_name = display_name.strip()
     user.role_id = admin_role.id
     user.password_hash = password_hash
+    user.disabled_at = None
     await session.flush()
     return user
