@@ -52,6 +52,51 @@ describe("App", () => {
     expect(markup).toContain("MFA");
   });
 
+  it("renders administrative user and role management", () => {
+    const markup = renderToString(
+      <App
+        initialView="admin"
+        initialAdminUsers={[
+          {
+            id: "user-1",
+            email: "admin@example.test",
+            display_name: "Admin User",
+            role: { id: "role-1", name: "Admin" },
+            disabled: false,
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ]}
+        initialAdminRoles={[
+          {
+            id: "role-1",
+            name: "Admin",
+            is_system_role: true,
+            permissions: ["users:manage", "roles:manage"],
+          },
+          {
+            id: "role-2",
+            name: "Triage",
+            is_system_role: false,
+            permissions: ["findings:read"],
+          },
+        ]}
+        initialUser={{
+          id: "user-1",
+          email: "admin@example.test",
+          display_name: "Admin User",
+          role: "Admin",
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Administration");
+    expect(markup).toContain("Local Users");
+    expect(markup).toContain("Create User");
+    expect(markup).toContain("Create Role");
+    expect(markup).toContain("admin@example.test");
+    expect(markup).toContain("Triage");
+  });
+
   it("renders theme switching in the topbar instead of preferences", () => {
     const markup = renderToString(
       <App
