@@ -131,8 +131,8 @@ EVE is intended for authorized defensive security workflows only. Scanner integr
 
 This project is developed with the assistance of generative AI tools. AI assistance may be used for drafting, implementation, review, and documentation support. Project direction, acceptance decisions, and responsibility for use remain with the human maintainer.
 
-## License And Copyright
+## License & Copyright
 
-Copyright (c) 2026 David McDuffie. All rights reserved.
+Copyright (C) 2026 David McDuffie. All rights reserved.
 
 No open-source license has been granted unless a separate `LICENSE` file or written agreement states otherwise.
