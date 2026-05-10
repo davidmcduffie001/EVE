@@ -7,6 +7,8 @@ from uuid import uuid4
 import anyio
 import pytest
 from fastapi.testclient import TestClient
+from httpx import Response as HttpxResponse
+from sqlalchemy import select
 
 from app.core.config import Settings
 from app.core.database import create_sessionmaker
@@ -188,6 +190,159 @@ async def test_oidc_callback_validates_state_before_token_exchange() -> None:
 
     assert response.status_code == 400
     assert response.json() == {"detail": "Invalid SSO state"}
+    await sessionmaker.kw["bind"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_oidc_callback_exchanges_code_and_auto_provisions_user(monkeypatch) -> None:
+    """A valid OIDC callback can create a local user and issue browser cookies."""
+    sessionmaker = create_sessionmaker("sqlite+aiosqlite:///:memory:")
+    async with sessionmaker.kw["bind"].begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    async with sessionmaker() as session:
+        role = Role(id=uuid4(), name="Analyst", is_system_role=True, permissions=["findings:read"])
+        session.add_all(
+            [
+                role,
+                SsoConfiguration(
+                    id="default",
+                    enabled=True,
+                    provider="oidc",
+                    display_name="Corporate IdP",
+                    issuer_url="https://idp.example.test",
+                    client_id="eve-client",
+                    auto_provision=True,
+                    default_role="Analyst",
+                ),
+            ]
+        )
+        await session.commit()
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self) -> FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def post(self, url: str, data: dict[str, str], **kwargs) -> HttpxResponse:
+            assert url == "https://idp.example.test/token"
+            assert data["grant_type"] == "authorization_code"
+            assert data["code"] == "auth-code"
+            assert data["client_id"] == "eve-client"
+            assert data["redirect_uri"] == "http://localhost:8001/auth/sso/oidc/callback"
+            return HttpxResponse(200, json={"access_token": "provider-access-token"})
+
+        async def get(self, url: str, headers: dict[str, str], **kwargs) -> HttpxResponse:
+            assert url == "https://idp.example.test/userinfo"
+            assert headers["Authorization"] == "Bearer provider-access-token"
+            return HttpxResponse(
+                200,
+                json={
+                    "sub": "user-123",
+                    "email": "New.User@Example.Test",
+                    "email_verified": True,
+                    "name": "New User",
+                },
+            )
+
+    monkeypatch.setattr("app.routers.auth.httpx.AsyncClient", FakeAsyncClient)
+
+    client = TestClient(
+        create_app(
+            settings=Settings(
+                auth_secret_key="test-signing-key",  # noqa: S106
+                cookie_secure=False,
+                api_base_url="http://localhost:8001",
+            ),
+            sessionmaker=sessionmaker,
+        )
+    )
+    client.cookies.set("eve_sso_state", "expected-state")
+
+    response = client.get("/auth/sso/oidc/callback?code=auth-code&state=expected-state")
+
+    assert response.status_code == 200
+    assert response.json()["user"]["email"] == "new.user@example.test"
+    assert response.json()["user"]["display_name"] == "New User"
+    assert response.json()["user"]["role"] == "Analyst"
+    assert "eve_access_token" in client.cookies
+    assert "eve_refresh_token" in client.cookies
+
+    async with sessionmaker() as session:
+        result = await session.execute(select(User).where(User.email == "new.user@example.test"))
+        stored_user = result.scalar_one_or_none()
+        assert stored_user is not None
+        assert stored_user.display_name == "New User"
+        assert stored_user.role_id == role.id
+
+    await sessionmaker.kw["bind"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_oidc_callback_rejects_unknown_user_when_auto_provisioning_is_disabled(
+    monkeypatch,
+) -> None:
+    """Unknown OIDC users require auto-provisioning to be enabled."""
+    sessionmaker = create_sessionmaker("sqlite+aiosqlite:///:memory:")
+    async with sessionmaker.kw["bind"].begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    async with sessionmaker() as session:
+        role = Role(id=uuid4(), name="Analyst", is_system_role=True, permissions=["findings:read"])
+        session.add_all(
+            [
+                role,
+                SsoConfiguration(
+                    id="default",
+                    enabled=True,
+                    provider="oidc",
+                    issuer_url="https://idp.example.test",
+                    client_id="eve-client",
+                    auto_provision=False,
+                    default_role="Analyst",
+                ),
+            ]
+        )
+        await session.commit()
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self) -> FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def post(self, *args, **kwargs) -> HttpxResponse:
+            return HttpxResponse(200, json={"access_token": "provider-access-token"})
+
+        async def get(self, *args, **kwargs) -> HttpxResponse:
+            return HttpxResponse(
+                200,
+                json={"email": "missing@example.test", "email_verified": True},
+            )
+
+    monkeypatch.setattr("app.routers.auth.httpx.AsyncClient", FakeAsyncClient)
+
+    client = TestClient(
+        create_app(
+            settings=Settings(auth_secret_key="test-signing-key", cookie_secure=False),  # noqa: S106
+            sessionmaker=sessionmaker,
+        )
+    )
+    client.cookies.set("eve_sso_state", "expected-state")
+
+    response = client.get("/auth/sso/oidc/callback?code=auth-code&state=expected-state")
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "SSO user is not provisioned"}
     await sessionmaker.kw["bind"].dispose()
 
 
