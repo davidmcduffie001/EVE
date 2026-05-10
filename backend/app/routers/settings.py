@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import hmac
+import threading
 from datetime import UTC, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
@@ -113,6 +112,9 @@ class PreferencesUpdateRequest(BaseModel):
     date_format: str | None = Field(default=None, max_length=40)
     default_landing_page: str | None = Field(default=None, max_length=120)
     table_state: dict | None = None
+
+
+_preference_creation_locks: dict[str, threading.Lock] = {}
 
 
 def create_settings_router(
@@ -276,8 +278,10 @@ def create_settings_router(
         user = await session.get(User, auth_user.id)
         if user is None:
             raise_auth_required()
-        preferences = await _get_or_create_preferences(session, user)
-        await session.commit()
+        lock = _preference_creation_locks.setdefault(str(user.id), threading.Lock())
+        with lock:
+            preferences = await _get_or_create_preferences(session, user)
+            await session.commit()
         return _serialize_preferences(user, preferences)
 
     @router.post(
@@ -443,20 +447,12 @@ async def _get_or_create_preferences(
     user_id = user.id
     preferences = await session.get(UserPreference, user_id)
     if preferences is None:
+        preferences = await session.get(UserPreference, user_id)
+        if preferences is not None:
+            return preferences
         preferences = UserPreference(user_id=user_id)
         session.add(preferences)
-        try:
-            await session.flush()
-        except IntegrityError:
-            await session.rollback()
-            await session.refresh(user)
-            for _attempt in range(5):
-                preferences = await session.get(UserPreference, user_id)
-                if preferences is not None:
-                    break
-                await asyncio.sleep(0.02)
-            else:
-                raise
+        await session.flush()
     return preferences
 
 
