@@ -61,6 +61,7 @@ type AppProps = {
   initialAdminRoles?: AdminRole[];
   initialAuditLogEntries?: AuditLogEntry[];
   initialSsoSettings?: SsoSettings;
+  initialSsoStatus?: SsoStatus;
 };
 
 type LoginState = "idle" | "submitting" | "failed" | "disabled" | "mfa" | "mfa-submitting";
@@ -150,6 +151,13 @@ type SsoSettings = {
   client_secret_configured: boolean;
 };
 
+type SsoStatus = {
+  enabled: boolean;
+  provider: "oidc" | "saml";
+  display_name: string;
+  login_url: string | null;
+};
+
 const emptyAdminUsers: AdminUser[] = [];
 const emptyAdminRoles: AdminRole[] = [];
 const emptyAuditLogEntries: AuditLogEntry[] = [];
@@ -163,6 +171,12 @@ const defaultSsoSettings: SsoSettings = {
   auto_provision: false,
   default_role: "Analyst",
   client_secret_configured: false,
+};
+const defaultSsoStatus: SsoStatus = {
+  enabled: false,
+  provider: "oidc",
+  display_name: "",
+  login_url: null,
 };
 
 type NavItem = {
@@ -279,6 +293,7 @@ export function App({
   initialAdminRoles = emptyAdminRoles,
   initialAuditLogEntries = emptyAuditLogEntries,
   initialSsoSettings = defaultSsoSettings,
+  initialSsoStatus = defaultSsoStatus,
 }: AppProps) {
   const [user, setUser] = useState<AuthenticatedUser | null>(
     initialUser ?? getPreviewUser(getCurrentSearch(), import.meta.env.DEV),
@@ -288,6 +303,7 @@ export function App({
   const [activeView, setActiveView] = useState<WorkspaceView>(initialView);
   const [themePreference, setThemePreference] = useState<ThemePreference>("dark");
   const [toast, setToast] = useState<ToastMessage | null>(initialToast);
+  const [ssoStatus, setSsoStatus] = useState<SsoStatus>(initialSsoStatus);
   const [preferences, setPreferences] = useState<UserPreferences>({
     theme_preference: "dark",
     timezone: "UTC",
@@ -325,6 +341,35 @@ export function App({
   const canManageRoles = user ? hasPermission(user, "roles:manage") : false;
   const canReadAudit = user ? hasPermission(user, "audit:read") : false;
   const effectiveActiveView = activeView;
+
+  useEffect(() => {
+    if (user || typeof window === "undefined") {
+      return undefined;
+    }
+
+    let isCurrent = true;
+    fetch(`${API_BASE_URL}/auth/sso/status`, { credentials: "include" })
+      .then((response) => {
+        if (!response.ok) {
+          throw new Error("Unable to load SSO status");
+        }
+        return response.json() as Promise<SsoStatus>;
+      })
+      .then((status) => {
+        if (isCurrent) {
+          setSsoStatus(status);
+        }
+      })
+      .catch(() => {
+        if (isCurrent) {
+          setSsoStatus(defaultSsoStatus);
+        }
+      });
+
+    return () => {
+      isCurrent = false;
+    };
+  }, [user]);
 
   async function handleThemeToggle() {
     const nextTheme = themePreference === "dark" ? "light" : "dark";
@@ -442,7 +487,7 @@ export function App({
         loginState={loginState}
         onSubmit={handleLogin}
         onMfaSubmit={handleMfaLogin}
-        ssoLoginUrl={SSO_LOGIN_URL}
+        ssoStatus={ssoStatus}
       />
     );
   }
@@ -1765,15 +1810,17 @@ function LoginScreen({
   loginState,
   onSubmit,
   onMfaSubmit,
-  ssoLoginUrl,
+  ssoStatus,
 }: {
   loginState: LoginState;
   onSubmit: FormEventHandler<HTMLFormElement>;
   onMfaSubmit: FormEventHandler<HTMLFormElement>;
-  ssoLoginUrl: string;
+  ssoStatus: SsoStatus;
 }) {
   const isSubmitting = loginState === "submitting" || loginState === "mfa-submitting";
   const needsMfa = loginState === "mfa" || loginState === "mfa-submitting";
+  const ssoEnabled = ssoStatus.enabled && ssoStatus.login_url;
+  const ssoLabel = ssoStatus.display_name ? `Continue with ${ssoStatus.display_name}` : "Continue with SSO";
 
   return (
     <main className="login-shell">
@@ -1818,10 +1865,20 @@ function LoginScreen({
           <div className="login-divider" aria-hidden="true">
             <span />
           </div>
-          <a className="secondary-action sso-login-action" href={ssoLoginUrl}>
-            <KeyRound size={18} aria-hidden="true" />
-            Continue with SSO
-          </a>
+          {ssoEnabled ? (
+            <a className="secondary-action sso-login-action" href={ssoStatus.login_url ?? SSO_LOGIN_URL}>
+              <KeyRound size={18} aria-hidden="true" />
+              {ssoLabel}
+            </a>
+          ) : (
+            <>
+              <button className="secondary-action sso-login-action" type="button" disabled>
+                <KeyRound size={18} aria-hidden="true" />
+                Continue with SSO
+              </button>
+              <p className="form-note">SSO has not been configured by an administrator.</p>
+            </>
+          )}
         </form>
         ) : (
         <form className="login-form" onSubmit={onMfaSubmit}>

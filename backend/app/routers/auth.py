@@ -68,6 +68,15 @@ class AuthResponse(BaseModel):
     access_expires_at: datetime
 
 
+class SsoStatusResponse(BaseModel):
+    """Public SSO availability details for the login screen."""
+
+    enabled: bool = False
+    provider: str = "oidc"
+    display_name: str = ""
+    login_url: str | None = None
+
+
 class MfaVerifyRequest(BaseModel):
     """MFA login verification request body."""
 
@@ -202,6 +211,12 @@ def create_auth_router(
             user=user,
             role=role,
         )
+
+    @router.get("/sso/status", response_model=SsoStatusResponse)
+    async def sso_status(session: AsyncSession = db_session) -> SsoStatusResponse:
+        """Return public SSO availability for unauthenticated login screens."""
+        configuration = await session.get(SsoConfiguration, "default")
+        return _serialize_sso_status(settings=settings, configuration=configuration)
 
     @router.get("/sso/login", response_model=None)
     async def sso_login(session: AsyncSession = db_session) -> RedirectResponse:
@@ -547,6 +562,28 @@ def _set_cookie(
         httponly=httponly,
         secure=settings.cookie_secure,
         samesite=settings.cookie_samesite,
+    )
+
+
+def _serialize_sso_status(
+    *,
+    settings: Settings,
+    configuration: SsoConfiguration | None,
+) -> SsoStatusResponse:
+    if configuration is None:
+        return SsoStatusResponse()
+
+    is_usable_oidc = (
+        configuration.enabled
+        and configuration.provider == "oidc"
+        and bool(configuration.issuer_url.strip())
+        and bool(configuration.client_id.strip())
+    )
+    return SsoStatusResponse(
+        enabled=is_usable_oidc,
+        provider=configuration.provider,
+        display_name=configuration.display_name if is_usable_oidc else "",
+        login_url=_api_url(settings, "/auth/sso/login") if is_usable_oidc else None,
     )
 
 

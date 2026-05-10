@@ -131,6 +131,55 @@ def test_login_sets_http_only_session_cookies(auth_client: TestClient) -> None:
 
 
 @pytest.mark.asyncio
+async def test_sso_status_reports_unavailable_until_oidc_is_configured() -> None:
+    """The public SSO status endpoint only enables login for usable OIDC settings."""
+    sessionmaker = create_sessionmaker("sqlite+aiosqlite:///:memory:")
+    async with sessionmaker.kw["bind"].begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    client = TestClient(
+        create_app(
+            settings=Settings(auth_secret_key="test-signing-key", cookie_secure=False),  # noqa: S106
+            sessionmaker=sessionmaker,
+        )
+    )
+
+    missing = client.get("/auth/sso/status")
+
+    assert missing.status_code == 200
+    assert missing.json() == {
+        "enabled": False,
+        "provider": "oidc",
+        "display_name": "",
+        "login_url": None,
+    }
+
+    async with sessionmaker() as session:
+        session.add(
+            SsoConfiguration(
+                id="default",
+                enabled=True,
+                provider="oidc",
+                display_name="Corporate IdP",
+                issuer_url="https://idp.example.test",
+                client_id="eve-client",
+            )
+        )
+        await session.commit()
+
+    configured = client.get("/auth/sso/status")
+
+    assert configured.status_code == 200
+    assert configured.json() == {
+        "enabled": True,
+        "provider": "oidc",
+        "display_name": "Corporate IdP",
+        "login_url": "http://localhost:8001/auth/sso/login",
+    }
+    await sessionmaker.kw["bind"].dispose()
+
+
+@pytest.mark.asyncio
 async def test_sso_login_rejects_disabled_configuration() -> None:
     """Browser SSO login cannot start until SSO is explicitly enabled."""
     sessionmaker = create_sessionmaker("sqlite+aiosqlite:///:memory:")
