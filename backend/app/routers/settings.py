@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 from datetime import UTC, datetime
 from typing import Literal
@@ -449,8 +450,12 @@ async def _get_or_create_preferences(
         except IntegrityError:
             await session.rollback()
             await session.refresh(user)
-            preferences = await session.get(UserPreference, user_id)
-            if preferences is None:
+            for _attempt in range(5):
+                preferences = await session.get(UserPreference, user_id)
+                if preferences is not None:
+                    break
+                await asyncio.sleep(0.02)
+            else:
                 raise
     return preferences
 

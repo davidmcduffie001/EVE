@@ -57,6 +57,7 @@ type AppProps = {
   initialToast?: ToastMessage | null;
   initialAdminUsers?: AdminUser[];
   initialAdminRoles?: AdminRole[];
+  initialAuditLogEntries?: AuditLogEntry[];
 };
 
 type LoginState = "idle" | "submitting" | "failed" | "disabled" | "mfa" | "mfa-submitting";
@@ -120,14 +121,28 @@ type AdminListResponse<T> = {
   total: number;
 };
 
+type AuditLogEntry = {
+  id: string;
+  occurred_at: string;
+  user_id: string | null;
+  action: string;
+  resource_type: string;
+  resource_id: string | null;
+  outcome: string;
+  source_ip: string | null;
+  metadata: Record<string, unknown>;
+  previous_hash: string;
+  entry_hash: string;
+};
+
 const emptyAdminUsers: AdminUser[] = [];
 const emptyAdminRoles: AdminRole[] = [];
+const emptyAuditLogEntries: AuditLogEntry[] = [];
 
 type NavItem = {
   label: string;
   icon: typeof Gauge;
   view?: WorkspaceView;
-  requiresAny?: string[];
 };
 
 const navItems: NavItem[] = [
@@ -136,7 +151,7 @@ const navItems: NavItem[] = [
   { label: "Findings", icon: Siren },
   { label: "Intelligence", icon: Database },
   { label: "Scanners", icon: Radar },
-  { label: "Administration", icon: UserCog, view: "admin", requiresAny: ["users:manage", "roles:manage"] },
+  { label: "Administration", icon: UserCog, view: "admin" },
   { label: "Settings", icon: Settings, view: "settings" },
 ];
 
@@ -236,6 +251,7 @@ export function App({
   initialToast = null,
   initialAdminUsers = emptyAdminUsers,
   initialAdminRoles = emptyAdminRoles,
+  initialAuditLogEntries = emptyAuditLogEntries,
 }: AppProps) {
   const [user, setUser] = useState<AuthenticatedUser | null>(
     initialUser ?? getPreviewUser(getCurrentSearch(), import.meta.env.DEV),
@@ -280,11 +296,8 @@ export function App({
 
   const canManageUsers = user ? hasPermission(user, "users:manage") : false;
   const canManageRoles = user ? hasPermission(user, "roles:manage") : false;
-  const canViewAdministration = canManageUsers || canManageRoles;
-  const effectiveActiveView = activeView === "admin" && !canViewAdministration ? "dashboard" : activeView;
-  const visibleNavItems = navItems.filter(
-    (item) => !item.requiresAny || item.requiresAny.some((permission) => user && hasPermission(user, permission)),
-  );
+  const canReadAudit = user ? hasPermission(user, "audit:read") : false;
+  const effectiveActiveView = activeView;
 
   async function handleThemeToggle() {
     const nextTheme = themePreference === "dark" ? "light" : "dark";
@@ -419,7 +432,7 @@ export function App({
           </div>
         </div>
         <nav className="nav-list" aria-label="Primary navigation">
-          {visibleNavItems.map((item) => {
+          {navItems.map((item) => {
             const Icon = item.icon;
             const itemView: WorkspaceView = item.view ?? "dashboard";
             return (
@@ -503,6 +516,8 @@ export function App({
             initialRoles={initialAdminRoles}
             canManageUsers={canManageUsers}
             canManageRoles={canManageRoles}
+            canReadAudit={canReadAudit}
+            initialAuditLogEntries={initialAuditLogEntries}
             onNotify={showToast}
           />
         ) : (
@@ -637,21 +652,27 @@ function DashboardWorkspace() {
 function AdminWorkspace({
   initialUsers,
   initialRoles,
+  initialAuditLogEntries,
   canManageUsers,
   canManageRoles,
+  canReadAudit,
   onNotify,
 }: {
   initialUsers: AdminUser[];
   initialRoles: AdminRole[];
+  initialAuditLogEntries: AuditLogEntry[];
   canManageUsers: boolean;
   canManageRoles: boolean;
+  canReadAudit: boolean;
   onNotify: NotifyHandler;
 }) {
   const [users, setUsers] = useState<AdminUser[]>(initialUsers);
   const [roles, setRoles] = useState<AdminRole[]>(initialRoles);
+  const [auditLogEntries, setAuditLogEntries] = useState<AuditLogEntry[]>(initialAuditLogEntries);
   const [userState, setUserState] = useState<SaveState>("idle");
   const [roleState, setRoleState] = useState<SaveState>("idle");
   const [rowState, setRowState] = useState<Record<string, SaveState>>({});
+  const hasAdministrationAccess = canManageUsers || canManageRoles || canReadAudit;
 
   useEffect(() => {
     let cancelled = false;
@@ -687,6 +708,33 @@ function AdminWorkspace({
       cancelled = true;
     };
   }, [canManageRoles, canManageUsers, initialRoles, initialUsers, onNotify]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAuditLog() {
+      if (!canReadAudit) {
+        setAuditLogEntries(initialAuditLogEntries);
+        return;
+      }
+
+      try {
+        const response = await fetchJson<AdminListResponse<AuditLogEntry>>("/admin/audit-log");
+        if (!cancelled) {
+          setAuditLogEntries(response.items);
+        }
+      } catch {
+        if (!cancelled) {
+          onNotify({ message: "Unable to load audit log.", tone: "error" });
+        }
+      }
+    }
+
+    loadAuditLog();
+    return () => {
+      cancelled = true;
+    };
+  }, [canReadAudit, initialAuditLogEntries, onNotify]);
 
   async function handleCreateUser(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -814,6 +862,18 @@ function AdminWorkspace({
 
   return (
     <section className="admin-grid" aria-label="Administration">
+      {!hasAdministrationAccess ? (
+        <section className="panel authorization-panel">
+          <div className="panel-header">
+            <div>
+              <h2>Not Authorized</h2>
+              <p>You are not authorized to view administration content.</p>
+            </div>
+            <ShieldCheck size={18} aria-hidden="true" />
+          </div>
+        </section>
+      ) : null}
+
       {canManageUsers ? (
       <section className="panel admin-users-panel">
         <div className="panel-header">
@@ -1040,6 +1100,51 @@ function AdminWorkspace({
             Create Role
           </button>
         </form>
+      </section>
+      ) : null}
+
+      {canReadAudit ? (
+      <section className="panel audit-log-panel">
+        <div className="panel-header">
+          <div>
+            <h2>Audit Log</h2>
+            <p>Tamper-evident administrative and authentication events.</p>
+          </div>
+          <Database size={18} aria-hidden="true" />
+        </div>
+        <div className="table-wrap audit-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Action</th>
+                <th>Resource</th>
+                <th>Outcome</th>
+                <th>Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              {auditLogEntries.map((entry) => (
+                <tr key={entry.id}>
+                  <td>{formatTimestamp(entry.occurred_at)}</td>
+                  <td>{entry.action}</td>
+                  <td>{formatAuditResource(entry)}</td>
+                  <td>
+                    <span className={`status-pill ${entry.outcome === "success" ? "active" : "disabled"}`}>
+                      {entry.outcome}
+                    </span>
+                  </td>
+                  <td>{entry.source_ip ?? "Unknown"}</td>
+                </tr>
+              ))}
+              {auditLogEntries.length === 0 ? (
+                <tr>
+                  <td colSpan={5}>No audit events recorded.</td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
       </section>
       ) : null}
     </section>
@@ -1448,6 +1553,21 @@ function sortUsers(users: AdminUser[]) {
 
 function sortRoles(roles: AdminRole[]) {
   return roles.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function formatTimestamp(value: string) {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toLocaleString(undefined, {
+    dateStyle: "short",
+    timeStyle: "medium",
+  });
+}
+
+function formatAuditResource(entry: AuditLogEntry) {
+  return entry.resource_id ? `${entry.resource_type}:${entry.resource_id}` : entry.resource_type;
 }
 
 function hasPermission(user: AuthenticatedUser, permission: string) {

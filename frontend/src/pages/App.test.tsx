@@ -123,9 +123,10 @@ describe("App", () => {
     expect(markup).toContain("Triage");
   });
 
-  it("hides administration navigation from users without administrative permissions", () => {
+  it("shows administration navigation with an authorization message for users without administrative permissions", () => {
     const markup = renderToString(
       <App
+        initialView="admin"
         initialUser={{
           id: "user-2",
           email: "analyst@example.test",
@@ -136,8 +137,10 @@ describe("App", () => {
       />,
     );
 
-    expect(markup).not.toContain("Administration");
+    expect(markup).toContain("Administration");
+    expect(markup).toContain("You are not authorized to view administration content.");
     expect(markup).not.toContain("Local Users");
+    expect(markup).not.toContain("Audit Log");
   });
 
   it("shows only user administration for users with users:manage", () => {
@@ -195,6 +198,61 @@ describe("App", () => {
     expect(markup).toContain("Create Role");
     expect(markup).not.toContain("Local Users");
     expect(markup).not.toContain("Create User");
+  });
+
+  it("renders the audit log beneath administration controls for audit readers", () => {
+    const markup = renderToString(
+      <App
+        initialView="admin"
+        initialUser={{
+          id: "user-1",
+          email: "admin@example.test",
+          display_name: "Admin User",
+          role: "Admin",
+          permissions: ["users:manage", "roles:manage", "audit:read"],
+        }}
+        initialAdminUsers={[
+          {
+            id: "user-1",
+            email: "admin@example.test",
+            display_name: "Admin User",
+            role: { id: "role-1", name: "Admin" },
+            disabled: false,
+            mfa_enrolled: false,
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ]}
+        initialAdminRoles={[
+          {
+            id: "role-1",
+            name: "Admin",
+            is_system_role: true,
+            permissions: ["*"],
+          },
+        ]}
+        initialAuditLogEntries={[
+          {
+            id: "audit-1",
+            occurred_at: "2026-05-10T08:30:00Z",
+            user_id: "user-1",
+            action: "admin.user_update",
+            resource_type: "user",
+            resource_id: "user-2",
+            outcome: "success",
+            source_ip: "127.0.0.1",
+            metadata: { email: "analyst@example.test" },
+            previous_hash: "abc",
+            entry_hash: "def",
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Local Users");
+    expect(markup).toContain("Create Role");
+    expect(markup).toContain("Audit Log");
+    expect(markup).toContain("admin.user_update");
+    expect(markup.indexOf("Audit Log")).toBeGreaterThan(markup.indexOf("Create Role"));
   });
 
   it("does not allow disabling the built-in Admin user from the UI", () => {
