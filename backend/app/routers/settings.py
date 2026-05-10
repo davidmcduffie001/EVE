@@ -2,24 +2,29 @@
 
 from __future__ import annotations
 
+import base64
 import hmac
+import json
 import threading
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Literal
+from uuid import UUID
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
-from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
 from app.core.database import get_db_session
-from app.models.base import User, UserPreference
+from app.models.base import ScannerIntegration, User, UserPreference, utc_now
 from app.services.audit import AuditLogService
 from app.services.auth.dependencies import (
     AuthenticatedUser,
     client_host,
     create_current_user_dependency,
+    create_permission_dependency,
     fetch_user_with_role,
 )
 from app.services.auth.mfa import build_totp_uri, generate_totp_secret, verify_totp_code
@@ -114,6 +119,70 @@ class PreferencesUpdateRequest(BaseModel):
     table_state: dict | None = None
 
 
+class ScannerIntegrationResponse(BaseModel):
+    """Scanner integration metadata safe to return to browsers."""
+
+    id: UUID
+    name: str
+    scanner_type: Literal["nessus"]
+    enabled: bool
+    last_sync_status: str
+    last_sync_at: datetime | None
+    last_error: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScannerIntegrationListResponse(BaseModel):
+    """Paginated scanner integration response envelope."""
+
+    items: list[ScannerIntegrationResponse]
+    page: int
+    page_size: int
+    total: int
+
+
+class ScannerIntegrationCreateRequest(BaseModel):
+    """Create a scanner integration with initial credentials."""
+
+    name: str = Field(min_length=1, max_length=200)
+    scanner_type: Literal["nessus"]
+    base_url: AnyHttpUrl
+    access_key: str = Field(min_length=1, max_length=512)
+    secret_key: str = Field(min_length=1, max_length=512)
+    enabled: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        """Trim scanner integration names before persistence."""
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Scanner integration name is required")
+        return normalized
+
+
+class ScannerIntegrationUpdateRequest(BaseModel):
+    """Update scanner integration metadata or rotate credentials."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    base_url: AnyHttpUrl | None = None
+    access_key: str | None = Field(default=None, min_length=1, max_length=512)
+    secret_key: str | None = Field(default=None, min_length=1, max_length=512)
+    enabled: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def normalize_optional_name(cls, value: str | None) -> str | None:
+        """Trim optional scanner integration names before persistence."""
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Scanner integration name is required")
+        return normalized
+
+
 _preference_creation_locks: dict[str, threading.Lock] = {}
 
 
@@ -127,6 +196,9 @@ def create_settings_router(
     db_session = Depends(db_dependency)
     current_user = create_current_user_dependency(settings, sessionmaker)
     current_user_dependency = Depends(current_user)
+    scanner_manager_dependency = Depends(
+        create_permission_dependency(settings, sessionmaker, "scanners:manage")
+    )
     password_hasher = PasswordHasher()
 
     @router.get("/profile", response_model=ProfileResponse)
@@ -437,6 +509,173 @@ def create_settings_router(
         await session.commit()
         return _serialize_preferences(user, preferences)
 
+    @router.get("/scanners", response_model=ScannerIntegrationListResponse)
+    async def list_scanner_integrations(
+        page: int = 1,
+        page_size: int = 50,
+        _auth_user: AuthenticatedUser = scanner_manager_dependency,
+        session: AsyncSession = db_session,
+    ) -> ScannerIntegrationListResponse:
+        """List configured scanner integrations. Requires `scanners:manage`."""
+        if page < 1 or page_size < 1 or page_size > 200:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid pagination parameters",
+            )
+        total = await session.scalar(select(func.count()).select_from(ScannerIntegration))
+        integrations = (
+            await session.scalars(
+                select(ScannerIntegration)
+                .order_by(ScannerIntegration.created_at.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        ).all()
+        return ScannerIntegrationListResponse(
+            items=[_serialize_scanner_integration(integration) for integration in integrations],
+            page=page,
+            page_size=page_size,
+            total=total or 0,
+        )
+
+    @router.post(
+        "/scanners",
+        response_model=ScannerIntegrationResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def create_scanner_integration(
+        payload: ScannerIntegrationCreateRequest,
+        http_request: Request,
+        csrf_cookie: str | None = Cookie(default=None, alias=settings.csrf_cookie_name),
+        csrf_header: str | None = Header(default=None, alias=settings.csrf_header_name),
+        auth_user: AuthenticatedUser = scanner_manager_dependency,
+        session: AsyncSession = db_session,
+    ) -> ScannerIntegrationResponse:
+        """Create a Nessus scanner integration. Requires `scanners:manage`."""
+        _validate_csrf(csrf_cookie=csrf_cookie, csrf_header=csrf_header)
+        credentials = _scanner_credentials_payload(
+            base_url=str(payload.base_url),
+            access_key=payload.access_key,
+            secret_key=payload.secret_key,
+        )
+        integration = ScannerIntegration(
+            name=payload.name,
+            scanner_type=payload.scanner_type,
+            edition_required="ce",
+            enabled=payload.enabled,
+            encrypted_credentials_ref=_encrypt_scanner_credentials(
+                settings=settings,
+                credentials=credentials,
+            ),
+            created_by=auth_user.id,
+        )
+        session.add(integration)
+        await session.flush()
+        await _record_settings_event(
+            session=session,
+            http_request=http_request,
+            user=auth_user,
+            action="settings.scanner_create",
+            outcome="success",
+            resource_type="scanner_integration",
+            resource_id=str(integration.id),
+            metadata={
+                "scanner_type": integration.scanner_type,
+                "enabled": integration.enabled,
+                "base_url_host": _host_from_url(str(payload.base_url)),
+            },
+        )
+        await session.commit()
+        return _serialize_scanner_integration(integration)
+
+    @router.patch("/scanners/{integration_id}", response_model=ScannerIntegrationResponse)
+    async def update_scanner_integration(
+        integration_id: UUID,
+        payload: ScannerIntegrationUpdateRequest,
+        http_request: Request,
+        csrf_cookie: str | None = Cookie(default=None, alias=settings.csrf_cookie_name),
+        csrf_header: str | None = Header(default=None, alias=settings.csrf_header_name),
+        auth_user: AuthenticatedUser = scanner_manager_dependency,
+        session: AsyncSession = db_session,
+    ) -> ScannerIntegrationResponse:
+        """Update a scanner integration. Requires `scanners:manage`."""
+        _validate_csrf(csrf_cookie=csrf_cookie, csrf_header=csrf_header)
+        integration = await session.get(ScannerIntegration, integration_id)
+        if integration is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Scanner integration not found",
+            )
+        if payload.name is not None:
+            integration.name = payload.name
+        if payload.enabled is not None:
+            integration.enabled = payload.enabled
+        if any(
+            value is not None
+            for value in (payload.base_url, payload.access_key, payload.secret_key)
+        ):
+            if payload.base_url is None or payload.access_key is None or payload.secret_key is None:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=(
+                        "Base URL, access key, and secret key are required to rotate credentials"
+                    ),
+                )
+            integration.encrypted_credentials_ref = _encrypt_scanner_credentials(
+                settings=settings,
+                credentials=_scanner_credentials_payload(
+                    base_url=str(payload.base_url),
+                    access_key=payload.access_key,
+                    secret_key=payload.secret_key,
+                ),
+            )
+        integration.updated_at = utc_now()
+        await _record_settings_event(
+            session=session,
+            http_request=http_request,
+            user=auth_user,
+            action="settings.scanner_update",
+            outcome="success",
+            resource_type="scanner_integration",
+            resource_id=str(integration.id),
+            metadata={"scanner_type": integration.scanner_type, "enabled": integration.enabled},
+        )
+        await session.commit()
+        return _serialize_scanner_integration(integration)
+
+    @router.delete("/scanners/{integration_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def delete_scanner_integration(
+        integration_id: UUID,
+        http_request: Request,
+        response: Response,
+        csrf_cookie: str | None = Cookie(default=None, alias=settings.csrf_cookie_name),
+        csrf_header: str | None = Header(default=None, alias=settings.csrf_header_name),
+        auth_user: AuthenticatedUser = scanner_manager_dependency,
+        session: AsyncSession = db_session,
+    ) -> Response:
+        """Delete a scanner integration. Requires `scanners:manage`."""
+        _validate_csrf(csrf_cookie=csrf_cookie, csrf_header=csrf_header)
+        integration = await session.get(ScannerIntegration, integration_id)
+        if integration is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Scanner integration not found",
+            )
+        await _record_settings_event(
+            session=session,
+            http_request=http_request,
+            user=auth_user,
+            action="settings.scanner_delete",
+            outcome="success",
+            resource_type="scanner_integration",
+            resource_id=str(integration.id),
+            metadata={"scanner_type": integration.scanner_type},
+        )
+        await session.delete(integration)
+        await session.commit()
+        response.status_code = status.HTTP_204_NO_CONTENT
+        return response
+
     return router
 
 
@@ -463,13 +702,15 @@ async def _record_settings_event(
     user: AuthenticatedUser,
     action: str,
     outcome: str,
+    resource_type: str = "user",
+    resource_id: str | None = None,
     metadata: dict | None = None,
 ) -> None:
     await AuditLogService(session).record(
         user_id=user.id,
         action=action,
-        resource_type="user",
-        resource_id=str(user.id),
+        resource_type=resource_type,
+        resource_id=resource_id or str(user.id),
         outcome=outcome,
         source_ip=client_host(http_request),
         metadata=metadata or {},
@@ -495,6 +736,56 @@ def _serialize_preferences(user: User, preferences: UserPreference) -> Preferenc
         default_landing_page=preferences.default_landing_page,
         table_state=preferences.table_state,
     )
+
+
+def _serialize_scanner_integration(
+    integration: ScannerIntegration,
+) -> ScannerIntegrationResponse:
+    return ScannerIntegrationResponse(
+        id=integration.id,
+        name=integration.name,
+        scanner_type=integration.scanner_type,
+        enabled=integration.enabled,
+        last_sync_status=integration.last_sync_status,
+        last_sync_at=integration.last_sync_at,
+        last_error=integration.last_error,
+        created_at=integration.created_at,
+        updated_at=integration.updated_at,
+    )
+
+
+def _scanner_credentials_payload(
+    *,
+    base_url: str,
+    access_key: str,
+    secret_key: str,
+) -> dict[str, str]:
+    return {
+        "base_url": base_url.rstrip("/"),
+        "access_key": access_key,
+        "secret_key": secret_key,
+    }
+
+
+def _encrypt_scanner_credentials(
+    *,
+    settings: Settings,
+    credentials: Mapping[str, str],
+) -> str:
+    key = settings.auth_secret_key.encode("utf-8")
+    plaintext = json.dumps(credentials, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    keystream = bytearray()
+    counter = 0
+    while len(keystream) < len(plaintext):
+        counter_bytes = counter.to_bytes(4, "big")
+        keystream.extend(hmac.digest(key, counter_bytes, "sha256"))
+        counter += 1
+    ciphertext = bytes(value ^ keystream[index] for index, value in enumerate(plaintext))
+    return "v1:" + base64.urlsafe_b64encode(ciphertext).decode("ascii")
+
+
+def _host_from_url(value: str) -> str:
+    return value.split("://", maxsplit=1)[-1].split("/", maxsplit=1)[0]
 
 
 def _validate_csrf(*, csrf_cookie: str | None, csrf_header: str | None) -> None:
