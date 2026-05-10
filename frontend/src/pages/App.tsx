@@ -1343,7 +1343,7 @@ function AdminWorkspace({
             onClick={handleValidateSso}
           >
             <ShieldCheck size={17} aria-hidden="true" />
-            Validate OIDC Configuration
+            Validate SSO Configuration
           </button>
           {ssoValidationResult ? (
             <div className={`sso-validation-results ${ssoValidationResult.valid ? "valid" : "invalid"}`}>
