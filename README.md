@@ -2,6 +2,10 @@
 
 EVE, the Exploit Validation Engine, is an on-premises security platform for aggregating scanner findings and enriching them with vulnerability and exploit metadata.
 
+## Development Disclosure
+
+This project is developed with the assistance of generative AI tools. AI assistance is used for drafting, implementation, review, and documentation support; project direction, acceptance, and responsibility for use remain with the human maintainer.
+
 ## Phase 1 Scope
 
 - FastAPI backend
