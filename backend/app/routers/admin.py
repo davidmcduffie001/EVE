@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import base64
 import hmac
+from collections.abc import Callable
 from datetime import datetime
 from urllib.parse import urlparse
 from uuid import UUID
 
 import httpx
+from defusedxml import ElementTree
 from fastapi import (
     APIRouter,
     Cookie,
@@ -708,6 +710,14 @@ async def _validate_sso_configuration(
         checks.append(SsoValidationCheck(name=name, passed=passed, message=message))
 
     provider = configuration.provider or "oidc"
+    if provider == "saml":
+        return await _validate_saml_configuration(
+            settings=settings,
+            configuration=configuration,
+            checks=checks,
+            add_check=add_check,
+        )
+
     add_check(
         "Provider",
         provider == "oidc",
@@ -842,6 +852,104 @@ async def _validate_sso_configuration(
     return _sso_validation_response(settings=settings, provider=provider, checks=checks)
 
 
+async def _validate_saml_configuration(
+    *,
+    settings: Settings,
+    configuration: SsoConfiguration,
+    checks: list[SsoValidationCheck],
+    add_check: Callable[[str, bool, str], None],
+) -> SsoValidationResponse:
+    provider = "saml"
+    add_check("Provider", True, "SAML validation is supported.")
+    issuer_url = configuration.issuer_url.strip().rstrip("/")
+    client_id = configuration.client_id.strip()
+    metadata_url = configuration.metadata_url.strip()
+    issuer_ok = _is_https_url(issuer_url)
+    client_id_ok = bool(client_id)
+    metadata_url_ok = _is_https_url(metadata_url)
+    add_check(
+        "Issuer URL",
+        issuer_ok,
+        "IdP issuer URL is configured."
+        if issuer_ok
+        else "Configure an HTTPS SAML IdP issuer URL.",
+    )
+    add_check(
+        "Entity ID",
+        client_id_ok,
+        "Service provider entity ID is configured."
+        if client_id_ok
+        else "Configure the service provider entity ID.",
+    )
+    add_check(
+        "Metadata URL",
+        metadata_url_ok,
+        "SAML metadata URL is configured."
+        if metadata_url_ok
+        else "Configure an HTTPS SAML metadata URL.",
+    )
+    if not issuer_ok or not client_id_ok or not metadata_url_ok:
+        return _sso_validation_response(settings=settings, provider=provider, checks=checks)
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            metadata_response = await client.get(metadata_url)
+        except httpx.HTTPError as exc:
+            add_check(
+                "SAML metadata",
+                False,
+                f"Unable to fetch SAML metadata: {exc.__class__.__name__}.",
+            )
+            return _sso_validation_response(settings=settings, provider=provider, checks=checks)
+
+    if metadata_response.status_code >= 400:
+        add_check(
+            "SAML metadata",
+            False,
+            f"SAML metadata returned HTTP {metadata_response.status_code}.",
+        )
+        return _sso_validation_response(settings=settings, provider=provider, checks=checks)
+
+    try:
+        metadata = ElementTree.fromstring(metadata_response.text)
+    except ElementTree.ParseError:
+        add_check("SAML metadata", False, "SAML metadata is not valid XML.")
+        return _sso_validation_response(settings=settings, provider=provider, checks=checks)
+
+    metadata_entity_id = metadata.attrib.get("entityID", "")
+    add_check(
+        "SAML metadata",
+        metadata.tag.endswith("EntityDescriptor"),
+        "SAML EntityDescriptor metadata was fetched."
+        if metadata.tag.endswith("EntityDescriptor")
+        else "SAML metadata must contain an EntityDescriptor root element.",
+    )
+    add_check(
+        "Issuer match",
+        metadata_entity_id == issuer_url,
+        "SAML metadata entityID matches the configured issuer URL."
+        if metadata_entity_id == issuer_url
+        else "SAML metadata entityID does not match the configured issuer URL.",
+    )
+    sso_service = _find_saml_sso_service(metadata)
+    add_check(
+        "IdP SSO service",
+        sso_service is not None,
+        "SAML metadata includes an HTTPS HTTP-Redirect or HTTP-POST SSO service."
+        if sso_service is not None
+        else "SAML metadata must include an HTTPS SingleSignOnService.",
+    )
+    signing_cert = _find_saml_signing_certificate(metadata)
+    add_check(
+        "Signing certificate",
+        signing_cert is not None,
+        "SAML metadata includes a signing certificate."
+        if signing_cert is not None
+        else "SAML metadata must include a signing certificate.",
+    )
+    return _sso_validation_response(settings=settings, provider=provider, checks=checks)
+
+
 def _sso_validation_response(
     *,
     settings: Settings,
@@ -851,9 +959,14 @@ def _sso_validation_response(
     return SsoValidationResponse(
         valid=all(check.passed for check in checks),
         provider=provider,
-        redirect_uri=f"{str(settings.api_base_url).rstrip('/')}/auth/sso/oidc/callback",
+        redirect_uri=_sso_redirect_uri(settings=settings, provider=provider),
         checks=checks,
     )
+
+
+def _sso_redirect_uri(*, settings: Settings, provider: str) -> str:
+    path = "/auth/sso/saml/acs" if provider == "saml" else "/auth/sso/oidc/callback"
+    return f"{str(settings.api_base_url).rstrip('/')}{path}"
 
 
 def _validate_oidc_endpoint(discovery: dict, key: str) -> str | None:
@@ -861,6 +974,34 @@ def _validate_oidc_endpoint(discovery: dict, key: str) -> str | None:
     if not isinstance(value, str) or not _is_https_url(value):
         return None
     return value
+
+
+SAML_METADATA_NAMESPACE = "{urn:oasis:names:tc:SAML:2.0:metadata}"
+SAML_DS_NAMESPACE = "{http://www.w3.org/2000/09/xmldsig#}"
+SAML_SSO_BINDINGS = {
+    "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect",
+    "urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST",
+}
+
+
+def _find_saml_sso_service(metadata: ElementTree.Element) -> ElementTree.Element | None:
+    for service in metadata.iter(f"{SAML_METADATA_NAMESPACE}SingleSignOnService"):
+        binding = service.attrib.get("Binding")
+        location = service.attrib.get("Location", "")
+        if binding in SAML_SSO_BINDINGS and _is_https_url(location):
+            return service
+    return None
+
+
+def _find_saml_signing_certificate(metadata: ElementTree.Element) -> str | None:
+    for descriptor in metadata.iter(f"{SAML_METADATA_NAMESPACE}KeyDescriptor"):
+        use = descriptor.attrib.get("use", "signing")
+        if use not in {"", "signing"}:
+            continue
+        for certificate in descriptor.iter(f"{SAML_DS_NAMESPACE}X509Certificate"):
+            if certificate.text and certificate.text.strip():
+                return certificate.text.strip()
+    return None
 
 
 def _is_https_url(value: str) -> bool:

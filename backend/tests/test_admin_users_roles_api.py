@@ -218,6 +218,104 @@ def test_admin_can_validate_oidc_sso_configuration(
     assert validation_events[-1].metadata_json["valid"] is True
 
 
+def test_admin_can_validate_saml_sso_configuration(
+    admin_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Admins can validate persisted SAML IdP metadata before enabling SSO."""
+    client, _sessionmaker = admin_client
+    _login(client)
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self) -> FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, url: str) -> HttpxResponse:
+            assert url == "https://idp.example.test/metadata.xml"
+            return HttpxResponse(
+                200,
+                text=(
+                    '<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" '
+                    'entityID="https://idp.example.test/saml">'
+                    '<IDPSSODescriptor protocolSupportEnumeration='
+                    '"urn:oasis:names:tc:SAML:2.0:protocol">'
+                    '<KeyDescriptor use="signing"><KeyInfo xmlns="http://www.w3.org/2000/09/xmldsig#">'
+                    "<X509Data><X509Certificate>MIIDfake</X509Certificate></X509Data>"
+                    "</KeyInfo></KeyDescriptor>"
+                    '<SingleSignOnService Binding='
+                    '"urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" '
+                    'Location="https://idp.example.test/sso" />'
+                    "</IDPSSODescriptor>"
+                    "</EntityDescriptor>"
+                ),
+            )
+
+    monkeypatch.setattr("app.routers.admin.httpx.AsyncClient", FakeAsyncClient)
+
+    update_response = client.put(
+        "/admin/sso",
+        json={
+            "enabled": False,
+            "provider": "saml",
+            "display_name": "Corporate SAML",
+            "issuer_url": "https://idp.example.test/saml",
+            "client_id": "eve-saml-sp",
+            "metadata_url": "https://idp.example.test/metadata.xml",
+            "auto_provision": False,
+            "default_role": "Analyst",
+        },
+        headers=_csrf_headers(client),
+    )
+    response = client.post("/admin/sso/validate", headers=_csrf_headers(client))
+    payload = response.json()
+
+    assert update_response.status_code == 200
+    assert response.status_code == 200
+    assert payload["valid"] is True
+    assert payload["provider"] == "saml"
+    assert payload["redirect_uri"] == "http://localhost:8001/auth/sso/saml/acs"
+    checks = {check["name"]: check["passed"] for check in payload["checks"]}
+    assert checks["SAML metadata"] is True
+    assert checks["IdP SSO service"] is True
+    assert checks["Signing certificate"] is True
+
+
+def test_admin_saml_validation_reports_missing_metadata_url(
+    admin_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    """SAML validation reports missing metadata separately from OIDC requirements."""
+    client, _sessionmaker = admin_client
+    _login(client)
+
+    update_response = client.put(
+        "/admin/sso",
+        json={
+            "enabled": False,
+            "provider": "saml",
+            "display_name": "Corporate SAML",
+            "issuer_url": "https://idp.example.test/saml",
+            "client_id": "eve-saml-sp",
+            "metadata_url": "",
+            "auto_provision": False,
+            "default_role": "Analyst",
+        },
+        headers=_csrf_headers(client),
+    )
+    response = client.post("/admin/sso/validate", headers=_csrf_headers(client))
+    payload = response.json()
+
+    assert update_response.status_code == 200
+    assert response.status_code == 200
+    assert payload["valid"] is False
+    assert {check["name"]: check["passed"] for check in payload["checks"]}["Metadata URL"] is False
+
+
 def test_admin_sso_validation_reports_missing_oidc_configuration(
     admin_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
 ) -> None:
