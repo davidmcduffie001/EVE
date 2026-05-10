@@ -611,6 +611,188 @@ tbody tr:hover {
   gap: 16px;
 }
 
+.admin-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 16px;
+  align-items: start;
+}
+
+.admin-users-panel,
+.admin-roles-panel {
+  padding: 0;
+}
+
+.admin-users-panel .panel-header,
+.admin-roles-panel .panel-header {
+  margin: 0;
+  padding: 18px;
+}
+
+.admin-table-wrap {
+  border-top: 1px solid #253034;
+}
+
+.admin-table-wrap table {
+  min-width: 760px;
+  table-layout: fixed;
+}
+
+.admin-table-wrap th:nth-child(1),
+.admin-table-wrap td:nth-child(1) {
+  width: 19%;
+}
+
+.admin-table-wrap th:nth-child(2),
+.admin-table-wrap td:nth-child(2) {
+  width: 28%;
+}
+
+.admin-table-wrap th:nth-child(3),
+.admin-table-wrap td:nth-child(3) {
+  width: 17%;
+}
+
+.admin-table-wrap th:nth-child(4),
+.admin-table-wrap td:nth-child(4) {
+  width: 12%;
+}
+
+.admin-table-wrap th:nth-child(5),
+.admin-table-wrap td:nth-child(5) {
+  width: 24%;
+}
+
+.table-edit-form {
+  margin: 0;
+}
+
+.table-edit-form input,
+td > input,
+td > select {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid #2a383b;
+  border-radius: 8px;
+  outline: 0;
+  background: #0f1517;
+  color: #f0f6f7;
+  padding: 8px 10px;
+}
+
+.table-actions {
+  display: flex;
+  gap: 6px;
+  min-width: 162px;
+}
+
+.table-actions .secondary-action {
+  min-height: 34px;
+  font-size: 12px;
+  padding: 7px 8px;
+}
+
+.status-pill {
+  display: inline-flex;
+  min-width: 74px;
+  justify-content: center;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 850;
+  padding: 5px 8px;
+  text-transform: uppercase;
+}
+
+.status-pill.active {
+  background: #14322d;
+  color: #75dcc8;
+}
+
+.status-pill.disabled {
+  background: #302527;
+  color: #ff9b8f;
+}
+
+.role-list {
+  display: grid;
+  gap: 12px;
+  padding: 0 18px 18px;
+}
+
+.role-card {
+  display: grid;
+  gap: 12px;
+  border-radius: 8px;
+  background: #182124;
+  padding: 14px;
+}
+
+.role-card > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.role-card strong,
+.role-card span {
+  min-width: 0;
+}
+
+.role-card > div:first-child span {
+  color: #95a3a8;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.permission-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.permission-list span {
+  border: 1px solid #2d3d41;
+  border-radius: 8px;
+  color: #cbd6d9;
+  font-size: 11px;
+  font-weight: 750;
+  padding: 5px 7px;
+}
+
+.permission-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  margin: 0;
+  border: 1px solid #2a383b;
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.permission-options legend {
+  color: #cbd6d9;
+  font-size: 13px;
+  font-weight: 800;
+  padding: 0 5px;
+}
+
+.permission-options label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #cbd6d9;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.permission-options input {
+  width: 15px;
+  height: 15px;
+  accent-color: #65c5b8;
+}
+
 .settings-panel {
   align-self: start;
 }
@@ -775,14 +957,18 @@ tbody tr:hover {
 
 .theme-light .search-field input,
 .theme-light .settings-form input,
-.theme-light .settings-form select {
+.theme-light .settings-form select,
+.theme-light .table-edit-form input,
+.theme-light td > input,
+.theme-light td > select {
   background: #f8fbfb;
   color: #172124;
 }
 
 .theme-light .settings-facts div,
 .theme-light .connector-steps li,
-.theme-light .activity-list li {
+.theme-light .activity-list li,
+.theme-light .role-card {
   background: #f3f8f8;
   color: #1c2a2e;
 }
@@ -811,6 +997,16 @@ tbody tr:hover {
   color: #685d0f;
 }
 
+.theme-light .status-pill.active {
+  background: #dff4ef;
+  color: #13766e;
+}
+
+.theme-light .status-pill.disabled {
+  background: #ffe5e0;
+  color: #9a3128;
+}
+
 .theme-light .bar-track {
   background: #dde9eb;
 }
@@ -834,8 +1030,21 @@ tbody tr:hover {
 }
 
 .theme-light td,
-.theme-light .settings-facts dd {
+.theme-light .settings-facts dd,
+.theme-light .permission-options label {
   color: #172124;
+}
+
+.theme-light .permission-options,
+.theme-light .permission-list span,
+.theme-light .table-edit-form input,
+.theme-light td > input,
+.theme-light td > select {
+  border-color: #bfd3d7;
+}
+
+.theme-light .permission-list span {
+  color: #314146;
 }
 
 .form-error {
@@ -931,7 +1140,8 @@ tbody tr:hover {
 
   .metrics-grid,
   .dashboard-grid,
-  .settings-grid {
+  .settings-grid,
+  .admin-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -971,8 +1181,10 @@ tbody tr:hover {
   .metrics-grid,
   .dashboard-grid,
   .settings-grid,
+  .admin-grid,
   .settings-form-inline,
-  .preview-content {
+  .preview-content,
+  .permission-options {
     grid-template-columns: 1fr;
   }
 

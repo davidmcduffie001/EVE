@@ -4,10 +4,12 @@ import {
   Bell,
   CheckCircle2,
   Database,
+  Eye,
   Gauge,
   KeyRound,
   LogOut,
   Moon,
+  Plus,
   Radar,
   Save,
   Search,
@@ -18,7 +20,9 @@ import {
   Siren,
   Sun,
   Target,
+  Trash2,
   UserCog,
+  UserPlus,
   UserRound,
 } from "lucide-react";
 import {
@@ -26,6 +30,7 @@ import {
   FormEventHandler,
   type Dispatch,
   type SetStateAction,
+  useCallback,
   useEffect,
   useMemo,
   useState,
@@ -48,10 +53,12 @@ type AppProps = {
   initialUser?: AuthenticatedUser | null;
   initialView?: WorkspaceView;
   initialToast?: ToastMessage | null;
+  initialAdminUsers?: AdminUser[];
+  initialAdminRoles?: AdminRole[];
 };
 
 type LoginState = "idle" | "submitting" | "failed";
-type WorkspaceView = "dashboard" | "settings";
+type WorkspaceView = "dashboard" | "settings" | "admin";
 type SaveState = "idle" | "saving" | "saved" | "failed";
 type ThemePreference = "dark" | "light";
 type ToastTone = "success" | "error";
@@ -79,6 +86,32 @@ type UserPreferences = {
   table_state: Record<string, unknown>;
 };
 
+type AdminRole = {
+  id: string;
+  name: string;
+  is_system_role: boolean;
+  permissions: string[];
+};
+
+type AdminUser = {
+  id: string;
+  email: string;
+  display_name: string;
+  role: {
+    id: string;
+    name: string;
+  };
+  disabled: boolean;
+  created_at: string;
+};
+
+type AdminListResponse<T> = {
+  items: T[];
+  page: number;
+  page_size: number;
+  total: number;
+};
+
 type NavItem = {
   label: string;
   icon: typeof Gauge;
@@ -91,6 +124,7 @@ const navItems: NavItem[] = [
   { label: "Findings", icon: Siren },
   { label: "Intelligence", icon: Database },
   { label: "Scanners", icon: Radar },
+  { label: "Administration", icon: UserCog, view: "admin" },
   { label: "Settings", icon: Settings, view: "settings" },
 ];
 
@@ -165,7 +199,28 @@ const dateFormatOptions = [
   { value: "MMM D, YYYY", label: "MMM D, YYYY" },
 ];
 
-export function App({ initialUser = null, initialView = "dashboard", initialToast = null }: AppProps) {
+const permissionOptions = [
+  "findings:read",
+  "findings:export",
+  "targets:manage",
+  "intel:manage",
+  "users:manage",
+  "roles:manage",
+  "audit:read",
+  "reports:export",
+  "scanners:manage",
+  "executions:create",
+  "executions:approve",
+  "credentials:manage",
+];
+
+export function App({
+  initialUser = null,
+  initialView = "dashboard",
+  initialToast = null,
+  initialAdminUsers = [],
+  initialAdminRoles = [],
+}: AppProps) {
   const [user, setUser] = useState<AuthenticatedUser | null>(
     initialUser ?? getPreviewUser(getCurrentSearch(), import.meta.env.DEV),
   );
@@ -202,9 +257,9 @@ export function App({ initialUser = null, initialView = "dashboard", initialToas
     return () => window.clearTimeout(timeout);
   }, [toast]);
 
-  function showToast({ message, tone = "success" }: NotifyPayload) {
+  const showToast = useCallback(({ message, tone = "success" }: NotifyPayload) => {
     setToast({ id: Date.now(), tone, message });
-  }
+  }, []);
 
   async function handleThemeToggle() {
     const nextTheme = themePreference === "dark" ? "light" : "dark";
@@ -278,6 +333,14 @@ export function App({ initialUser = null, initialView = "dashboard", initialToas
     return <LoginScreen loginState={loginState} onSubmit={handleLogin} />;
   }
 
+  const title = activeView === "settings" ? "Account Settings" : activeView === "admin" ? "Administration" : "Findings Dashboard";
+  const subtitle =
+    activeView === "settings"
+      ? "Manage identity, password, preferences, and authentication controls."
+      : activeView === "admin"
+        ? "Manage local users, role assignments, and custom RBAC roles."
+        : "Scanner intake, scope status, and exploit metadata triage.";
+
   return (
     <main className={`app-shell theme-${themePreference}`}>
       <aside className="sidebar">
@@ -319,12 +382,8 @@ export function App({ initialUser = null, initialView = "dashboard", initialToas
       <section className="workspace">
         <header className="topbar">
           <div>
-            <h1>{activeView === "settings" ? "Account Settings" : "Findings Dashboard"}</h1>
-            <p>
-              {activeView === "settings"
-                ? "Manage identity, password, preferences, and authentication controls."
-                : "Scanner intake, scope status, and exploit metadata triage."}
-            </p>
+            <h1>{title}</h1>
+            <p>{subtitle}</p>
           </div>
           <div className="topbar-actions">
             <label className="search-field">
@@ -369,6 +428,12 @@ export function App({ initialUser = null, initialView = "dashboard", initialToas
             onUserChange={setUser}
             preferences={preferences}
             onPreferencesChange={handlePreferencesChange}
+            onNotify={showToast}
+          />
+        ) : activeView === "admin" ? (
+          <AdminWorkspace
+            initialUsers={initialAdminUsers}
+            initialRoles={initialAdminRoles}
             onNotify={showToast}
           />
         ) : (
@@ -497,6 +562,340 @@ function DashboardWorkspace() {
           </div>
         </section>
     </>
+  );
+}
+
+function AdminWorkspace({
+  initialUsers,
+  initialRoles,
+  onNotify,
+}: {
+  initialUsers: AdminUser[];
+  initialRoles: AdminRole[];
+  onNotify: NotifyHandler;
+}) {
+  const [users, setUsers] = useState<AdminUser[]>(initialUsers);
+  const [roles, setRoles] = useState<AdminRole[]>(initialRoles);
+  const [userState, setUserState] = useState<SaveState>("idle");
+  const [roleState, setRoleState] = useState<SaveState>("idle");
+  const [rowState, setRowState] = useState<Record<string, SaveState>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadAdminData() {
+      try {
+        const [usersResponse, rolesResponse] = await Promise.all([
+          fetchJson<AdminListResponse<AdminUser>>("/admin/users"),
+          fetchJson<AdminListResponse<AdminRole>>("/admin/roles"),
+        ]);
+        if (!cancelled) {
+          setUsers(usersResponse.items);
+          setRoles(rolesResponse.items);
+        }
+      } catch {
+        if (!cancelled) {
+          onNotify({ message: "Unable to load administration data.", tone: "error" });
+        }
+      }
+    }
+
+    loadAdminData();
+    return () => {
+      cancelled = true;
+    };
+  }, [onNotify]);
+
+  async function handleCreateUser(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    setUserState("saving");
+    try {
+      const user = await fetchJson<AdminUser>("/admin/users", {
+        method: "POST",
+        body: JSON.stringify({
+          email: formData.get("email"),
+          display_name: formData.get("display_name"),
+          password: formData.get("password"),
+          role_id: formData.get("role_id"),
+        }),
+      });
+      setUsers((current) => sortUsers([...current, user]));
+      setUserState("idle");
+      onNotify({ message: "User created." });
+      form.reset();
+    } catch {
+      setUserState("idle");
+      onNotify({ message: "Unable to create user.", tone: "error" });
+    }
+  }
+
+  async function handleCreateRole(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    setRoleState("saving");
+    try {
+      const role = await fetchJson<AdminRole>("/admin/roles", {
+        method: "POST",
+        body: JSON.stringify({
+          name: formData.get("name"),
+          permissions: formData.getAll("permissions"),
+        }),
+      });
+      setRoles((current) => sortRoles([...current, role]));
+      setRoleState("idle");
+      onNotify({ message: "Role created." });
+      form.reset();
+    } catch {
+      setRoleState("idle");
+      onNotify({ message: "Unable to create role.", tone: "error" });
+    }
+  }
+
+  async function handleUserUpdate(user: AdminUser, form: HTMLFormElement) {
+    const formData = new FormData(form);
+    setRowState((current) => ({ ...current, [user.id]: "saving" }));
+    try {
+      const nextUser = await fetchJson<AdminUser>(`/admin/users/${user.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          display_name: formData.get("display_name"),
+          email: formData.get("email"),
+          role_id: formData.get("role_id"),
+        }),
+      });
+      setUsers((current) => sortUsers(current.map((item) => (item.id === user.id ? nextUser : item))));
+      onNotify({ message: "User updated." });
+    } catch {
+      onNotify({ message: "Unable to update user.", tone: "error" });
+    } finally {
+      setRowState((current) => ({ ...current, [user.id]: "idle" }));
+    }
+  }
+
+  async function handleUserDisabled(user: AdminUser) {
+    setRowState((current) => ({ ...current, [user.id]: "saving" }));
+    try {
+      const nextUser = await fetchJson<AdminUser>(`/admin/users/${user.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ disabled: !user.disabled }),
+      });
+      setUsers((current) => sortUsers(current.map((item) => (item.id === user.id ? nextUser : item))));
+      onNotify({ message: nextUser.disabled ? "User disabled." : "User enabled." });
+    } catch {
+      onNotify({ message: "Unable to update user status.", tone: "error" });
+    } finally {
+      setRowState((current) => ({ ...current, [user.id]: "idle" }));
+    }
+  }
+
+  async function handleDeleteRole(role: AdminRole) {
+    setRowState((current) => ({ ...current, [role.id]: "saving" }));
+    try {
+      await fetchJson<void>(`/admin/roles/${role.id}`, { method: "DELETE" });
+      setRoles((current) => current.filter((item) => item.id !== role.id));
+      onNotify({ message: "Role deleted." });
+    } catch {
+      onNotify({ message: "Unable to delete role.", tone: "error" });
+    } finally {
+      setRowState((current) => ({ ...current, [role.id]: "idle" }));
+    }
+  }
+
+  return (
+    <section className="admin-grid" aria-label="Administration">
+      <section className="panel admin-users-panel">
+        <div className="panel-header">
+          <div>
+            <h2>Local Users</h2>
+            <p>Create users, update profile details, assign roles, and disable accounts.</p>
+          </div>
+          <UserCog size={18} aria-hidden="true" />
+        </div>
+        <div className="table-wrap admin-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>User</th>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((user) => {
+                const busy = rowState[user.id] === "saving";
+                return (
+                  <tr key={user.id}>
+                    <td>
+                      <form
+                        id={`admin-user-${user.id}`}
+                        className="table-edit-form"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          handleUserUpdate(user, event.currentTarget);
+                        }}
+                      >
+                        <input name="display_name" defaultValue={user.display_name} required />
+                      </form>
+                    </td>
+                    <td>
+                      <input
+                        form={`admin-user-${user.id}`}
+                        name="email"
+                        type="email"
+                        defaultValue={user.email}
+                        required
+                      />
+                    </td>
+                    <td>
+                      <select form={`admin-user-${user.id}`} name="role_id" defaultValue={user.role.id}>
+                        {roles.map((role) => (
+                          <option value={role.id} key={role.id}>
+                            {role.name}
+                          </option>
+                        ))}
+                      </select>
+                    </td>
+                    <td>
+                      <span className={`status-pill ${user.disabled ? "disabled" : "active"}`}>
+                        {user.disabled ? "Disabled" : "Active"}
+                      </span>
+                    </td>
+                    <td>
+                      <div className="table-actions">
+                        <button
+                          className="secondary-action"
+                          type="submit"
+                          form={`admin-user-${user.id}`}
+                          disabled={busy}
+                        >
+                          <Save size={15} aria-hidden="true" />
+                          Save
+                        </button>
+                        <button
+                          className="secondary-action"
+                          type="button"
+                          onClick={() => handleUserDisabled(user)}
+                          disabled={busy}
+                        >
+                          <Eye size={15} aria-hidden="true" />
+                          {user.disabled ? "Enable" : "Disable"}
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="panel settings-panel">
+        <div className="panel-header">
+          <div>
+            <h2>Create User</h2>
+            <p>Add a local account and assign an initial role.</p>
+          </div>
+          <UserPlus size={18} aria-hidden="true" />
+        </div>
+        <form className="settings-form" onSubmit={handleCreateUser}>
+          <label>
+            Name
+            <input name="display_name" required />
+          </label>
+          <label>
+            Email
+            <input name="email" type="email" required />
+          </label>
+          <label>
+            Temporary password
+            <input name="password" type="password" minLength={12} autoComplete="new-password" required />
+          </label>
+          <label>
+            Role
+            <select name="role_id" required defaultValue={roles[0]?.id ?? ""}>
+              {roles.map((role) => (
+                <option value={role.id} key={role.id}>
+                  {role.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className="primary-action" type="submit" disabled={userState === "saving" || roles.length === 0}>
+            <Plus size={17} aria-hidden="true" />
+            Create User
+          </button>
+        </form>
+      </section>
+
+      <section className="panel admin-roles-panel">
+        <div className="panel-header">
+          <div>
+            <h2>Roles</h2>
+            <p>Review built-in roles and remove custom roles that are no longer assigned.</p>
+          </div>
+          <ShieldCheck size={18} aria-hidden="true" />
+        </div>
+        <div className="role-list">
+          {roles.map((role) => (
+            <article className="role-card" key={role.id}>
+              <div>
+                <strong>{role.name}</strong>
+                <span>{role.is_system_role ? "System role" : "Custom role"}</span>
+              </div>
+              <div className="permission-list">
+                {role.permissions.map((permission) => (
+                  <span key={permission}>{permission}</span>
+                ))}
+              </div>
+              <button
+                className="secondary-action"
+                type="button"
+                disabled={role.is_system_role || rowState[role.id] === "saving"}
+                onClick={() => handleDeleteRole(role)}
+              >
+                <Trash2 size={15} aria-hidden="true" />
+                Delete
+              </button>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <section className="panel settings-panel">
+        <div className="panel-header">
+          <div>
+            <h2>Create Role</h2>
+            <p>Define a custom role from the registered permission set.</p>
+          </div>
+          <ShieldCheck size={18} aria-hidden="true" />
+        </div>
+        <form className="settings-form" onSubmit={handleCreateRole}>
+          <label>
+            Role name
+            <input name="name" required />
+          </label>
+          <fieldset className="permission-options">
+            <legend>Permissions</legend>
+            {permissionOptions.map((permission) => (
+              <label key={permission}>
+                <input name="permissions" type="checkbox" value={permission} />
+                {permission}
+              </label>
+            ))}
+          </fieldset>
+          <button className="primary-action" type="submit" disabled={roleState === "saving"}>
+            <Plus size={17} aria-hidden="true" />
+            Create Role
+          </button>
+        </form>
+      </section>
+    </section>
   );
 }
 
@@ -656,7 +1055,6 @@ function SettingsWorkspace({
               placeholder="Required for email changes"
             />
           </label>
-          <FormStatus state={profileState} />
           <button className="primary-action" type="submit" disabled={profileState === "saving"}>
             <Save size={17} aria-hidden="true" />
             Save Profile
@@ -681,7 +1079,6 @@ function SettingsWorkspace({
             New password
             <input name="new_password" type="password" minLength={12} autoComplete="new-password" required />
           </label>
-          <FormStatus state={passwordState} />
           <button className="primary-action" type="submit" disabled={passwordState === "saving"}>
             <KeyRound size={17} aria-hidden="true" />
             Update Password
@@ -722,7 +1119,6 @@ function SettingsWorkspace({
               ))}
             </select>
           </label>
-          <FormStatus state={preferenceState} />
           <button className="primary-action" type="submit" disabled={preferenceState === "saving"}>
             <Save size={17} aria-hidden="true" />
             Save Preferences
@@ -760,25 +1156,20 @@ function SettingsWorkspace({
   );
 }
 
-function FormStatus({ state }: { state: SaveState }) {
-  if (state === "idle") {
-    return null;
-  }
-  if (state === "saving") {
-    return <p className="form-note">Saving changes</p>;
-  }
-  if (state === "saved") {
-    return null;
-  }
-  return <p className="form-error">Unable to save changes.</p>;
-}
-
 function ToastNotification({ toast }: { toast: ToastMessage }) {
   return (
     <div className={`toast ${toast.tone}`} role={toast.tone === "success" ? "status" : "alert"}>
       {toast.message}
     </div>
   );
+}
+
+function sortUsers(users: AdminUser[]) {
+  return users.sort((left, right) => left.email.localeCompare(right.email));
+}
+
+function sortRoles(roles: AdminRole[]) {
+  return roles.sort((left, right) => left.name.localeCompare(right.name));
 }
 
 async function fetchJson<T>(
