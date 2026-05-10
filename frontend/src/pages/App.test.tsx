@@ -52,6 +52,23 @@ describe("App", () => {
     expect(markup).toContain("MFA");
   });
 
+  it("renders theme switching in the topbar instead of preferences", () => {
+    const markup = renderToString(
+      <App
+        initialView="settings"
+        initialUser={{
+          id: "user-1",
+          email: "admin@example.test",
+          display_name: "Admin User",
+          role: "Admin",
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Switch to light theme");
+    expect(markup).not.toContain(">Theme</label>");
+  });
+
   it("builds CSRF headers from the readable CSRF cookie", () => {
     const headers = buildAuthHeaders("eve_access_token=opaque; eve_csrf_token=csrf-123");
 
