@@ -26,6 +26,13 @@ Phase 1 does not include exploit execution, execution credentials, or execution-
 - `docs/` - architecture notes, integration guides, runbooks, and legal drafts
 - `.github/` - CI workflow and collaboration templates
 
+## Current Backend Foundation
+
+- Async SQLAlchemy engine/session helpers are available for FastAPI dependencies and tests.
+- Alembic contains the baseline Phase 1 schema migration.
+- Seed services initialize built-in roles plus NVD and SearchSploit metadata sources idempotently.
+- A small repository primitive supports basic async model persistence.
+
 ## Local Development
 
 The full development environment is specified in `SPECIFICATION.md`. Start with the backend smoke test and frontend build once dependencies are installed.
@@ -36,5 +43,13 @@ pytest backend
 
 cd frontend
 npm install
+npm test -- --run
 npm run build
+```
+
+The frontend development server currently runs on port `8000`:
+
+```bash
+cd frontend
+npm run dev -- --host 0.0.0.0
 ```
