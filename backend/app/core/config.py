@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     celery_result_backend: str = "redis://127.0.0.1:6379/2"
     cookie_secure: bool = False
     cors_origins: list[str] = Field(default_factory=lambda: ["http://localhost:5173"])
+    auth_secret_key: str = Field(
+        default_factory=lambda: "eve-development-auth-signing-key-change-before-production"
+    )
+    access_token_ttl_seconds: int = 900
+    refresh_token_ttl_seconds: int = 60 * 60 * 24 * 30
 
 
 @lru_cache
