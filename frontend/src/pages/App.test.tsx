@@ -146,8 +146,59 @@ describe("App", () => {
       />,
     );
 
-    expect(markup).toContain("Built-in Admin");
+    expect(markup).toContain("Enabled");
     expect(markup).toContain("disabled=\"\"");
+  });
+
+  it("locks the built-in Admin role and renders standard user status labels", () => {
+    const markup = renderToString(
+      <App
+        initialView="admin"
+        initialAdminUsers={[
+          {
+            id: "user-1",
+            email: "admin@example.test",
+            display_name: "Admin User",
+            role: { id: "role-1", name: "Admin" },
+            disabled: false,
+            created_at: "2026-01-01T00:00:00Z",
+          },
+          {
+            id: "user-2",
+            email: "analyst@example.test",
+            display_name: "Analyst User",
+            role: { id: "role-2", name: "Analyst" },
+            disabled: true,
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ]}
+        initialAdminRoles={[
+          {
+            id: "role-1",
+            name: "Admin",
+            is_system_role: true,
+            permissions: ["users:manage", "roles:manage"],
+          },
+          {
+            id: "role-2",
+            name: "Analyst",
+            is_system_role: true,
+            permissions: ["findings:read"],
+          },
+        ]}
+        initialUser={{
+          id: "user-1",
+          email: "admin@example.test",
+          display_name: "Admin User",
+          role: "Admin",
+        }}
+      />,
+    );
+
+    expect(markup).not.toContain(">Built-in Admin<");
+    expect(markup).toContain("Enabled");
+    expect(markup).toContain("Disabled");
+    expect(markup).toContain('aria-label="Built-in Admin role cannot be changed"');
   });
 
   it("renders theme switching in the topbar instead of preferences", () => {

@@ -693,6 +693,19 @@ function AdminWorkspace({
     }
   }
 
+  async function handleDeleteUser(user: AdminUser) {
+    setRowState((current) => ({ ...current, [user.id]: "saving" }));
+    try {
+      await fetchJson<void>(`/admin/users/${user.id}`, { method: "DELETE" });
+      setUsers((current) => current.filter((item) => item.id !== user.id));
+      onNotify({ message: "User deleted." });
+    } catch {
+      onNotify({ message: "Unable to delete user.", tone: "error" });
+    } finally {
+      setRowState((current) => ({ ...current, [user.id]: "idle" }));
+    }
+  }
+
   async function handleDeleteRole(role: AdminRole) {
     setRowState((current) => ({ ...current, [role.id]: "saving" }));
     try {
@@ -755,7 +768,13 @@ function AdminWorkspace({
                       />
                     </td>
                     <td>
-                      <select form={`admin-user-${user.id}`} name="role_id" defaultValue={user.role.id}>
+                      <select
+                        form={`admin-user-${user.id}`}
+                        name="role_id"
+                        defaultValue={user.role.id}
+                        disabled={builtInAdminUser}
+                        aria-label={builtInAdminUser ? "Built-in Admin role cannot be changed" : undefined}
+                      >
                         {roles.map((role) => (
                           <option value={role.id} key={role.id}>
                             {role.name}
@@ -765,7 +784,7 @@ function AdminWorkspace({
                     </td>
                     <td>
                       <span className={`status-pill ${user.disabled ? "disabled" : "active"}`}>
-                        {builtInAdminUser ? "Built-in Admin" : user.disabled ? "Disabled" : "Active"}
+                        {user.disabled ? "Disabled" : "Enabled"}
                       </span>
                     </td>
                     <td>
@@ -787,6 +806,15 @@ function AdminWorkspace({
                         >
                           <Eye size={15} aria-hidden="true" />
                           {user.disabled ? "Enable" : "Disable"}
+                        </button>
+                        <button
+                          className="secondary-action"
+                          type="button"
+                          onClick={() => handleDeleteUser(user)}
+                          disabled={busy || builtInAdminUser}
+                        >
+                          <Trash2 size={15} aria-hidden="true" />
+                          Delete
                         </button>
                       </div>
                     </td>
