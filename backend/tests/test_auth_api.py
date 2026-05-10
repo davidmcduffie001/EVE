@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+import anyio
 import pytest
 from fastapi.testclient import TestClient
 
@@ -79,13 +80,10 @@ def test_login_sets_http_only_session_cookies(auth_client: TestClient) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["user"] == {
-        "id": response.json()["user"]["id"],
-        "email": "admin@example.test",
-        "display_name": "Admin User",
-        "role": "Admin",
-        "permissions": ["*"],
-    }
+    assert response.json()["user"]["email"] == "admin@example.test"
+    assert response.json()["user"]["display_name"] == "Admin User"
+    assert response.json()["user"]["role"] == "Admin"
+    assert "users:manage" in response.json()["user"]["permissions"]
     set_cookie_headers = response.headers.get_list("set-cookie")
     assert any(
         "eve_access_token=" in header and "HttpOnly" in header
@@ -111,7 +109,46 @@ def test_me_returns_current_user_from_access_cookie(auth_client: TestClient) -> 
     assert response.status_code == 200
     assert response.json()["email"] == "admin@example.test"
     assert response.json()["role"] == "Admin"
-    assert response.json()["permissions"] == ["*"]
+    assert "users:manage" in response.json()["permissions"]
+
+
+def test_admin_role_receives_builtin_permissions_even_if_database_role_is_stale() -> None:
+    """The built-in Admin role remains authorized if an older DB row has stale permissions."""
+    sessionmaker = create_sessionmaker("sqlite+aiosqlite:///:memory:")
+
+    async def seed() -> None:
+        async with sessionmaker.kw["bind"].begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+
+        async with sessionmaker() as session:
+            role = Role(id=uuid4(), name="Admin", is_system_role=True, permissions=[])
+            user = User(
+                id=uuid4(),
+                email="admin@example.test",
+                display_name="Admin User",
+                role_id=role.id,
+                password_hash=PasswordHasher().hash_password("correct-password"),
+            )
+            session.add_all([role, user])
+            await session.commit()
+
+    anyio.run(seed)
+    client = TestClient(
+        create_app(
+            settings=Settings(auth_secret_key="test-signing-key", cookie_secure=False),  # noqa: S106
+            sessionmaker=sessionmaker,
+        )
+    )
+    login = client.post(
+        "/auth/login",
+        json={"email": "admin@example.test", "password": "correct-password"},
+    )
+    users = client.get("/admin/users")
+
+    assert login.status_code == 200
+    assert "users:manage" in login.json()["user"]["permissions"]
+    assert users.status_code == 200
+    anyio.run(sessionmaker.kw["bind"].dispose)
 
 
 @pytest.mark.asyncio

@@ -23,6 +23,7 @@ from app.services.auth.dependencies import (
     fetch_user_with_role,
 )
 from app.services.auth.mfa import verify_totp_code
+from app.services.auth.permissions import PERMISSIONS
 from app.services.auth.security import InvalidTokenError, PasswordHasher, TokenSigner
 from app.services.auth.sessions import RefreshSessionService
 
@@ -355,7 +356,13 @@ async def _record_login_failure(
 
 def _serialize_user(user: User | AuthenticatedUser, role: Role | None = None) -> UserResponse:
     role_name = role.name if role is not None else user.role_name
-    permissions = role.permissions if role is not None else sorted(user.permissions)
+    permissions = (
+        sorted(PERMISSIONS)
+        if role is not None and role.is_system_role and role.name == "Admin"
+        else role.permissions
+        if role is not None
+        else sorted(user.permissions)
+    )
     return UserResponse(
         id=user.id,
         email=user.email,
