@@ -207,3 +207,70 @@ def test_built_in_admin_user_cannot_be_disabled(
 
     assert response.status_code == 400
     assert response.json() == {"detail": "Built-in Admin user cannot be disabled"}
+
+
+def test_built_in_admin_user_role_cannot_be_changed(
+    admin_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    """The built-in local Admin account must retain the Admin role."""
+    client, _sessionmaker = admin_client
+    _login(client)
+    users_response = client.get("/admin/users")
+    roles_response = client.get("/admin/roles")
+    admin = next(
+        user for user in users_response.json()["items"] if user["email"] == "admin@example.test"
+    )
+    analyst_role = next(
+        role for role in roles_response.json()["items"] if role["name"] == "Analyst"
+    )
+
+    response = client.patch(
+        f"/admin/users/{admin['id']}",
+        json={"role_id": analyst_role["id"]},
+        headers=_csrf_headers(client),
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Built-in Admin user role cannot be changed"}
+
+
+def test_admin_can_delete_user_account(
+    admin_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    """Admins can delete local user accounts that are not the built-in Admin."""
+    client, _sessionmaker = admin_client
+    _login(client)
+    users_response = client.get("/admin/users")
+    analyst = next(
+        user for user in users_response.json()["items"] if user["email"] == "analyst@example.test"
+    )
+
+    response = client.delete(f"/admin/users/{analyst['id']}", headers=_csrf_headers(client))
+    users_after_delete = client.get("/admin/users")
+    login_response = client.post(
+        "/auth/login",
+        json={"email": "analyst@example.test", "password": "correct-password"},
+    )
+
+    assert response.status_code == 204
+    assert "analyst@example.test" not in [
+        user["email"] for user in users_after_delete.json()["items"]
+    ]
+    assert login_response.status_code == 401
+
+
+def test_built_in_admin_user_cannot_be_deleted(
+    admin_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    """The built-in local Admin account must not be deletable."""
+    client, _sessionmaker = admin_client
+    _login(client)
+    users_response = client.get("/admin/users")
+    admin = next(
+        user for user in users_response.json()["items"] if user["email"] == "admin@example.test"
+    )
+
+    response = client.delete(f"/admin/users/{admin['id']}", headers=_csrf_headers(client))
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Built-in Admin user cannot be deleted"}

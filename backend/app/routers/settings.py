@@ -22,6 +22,7 @@ from app.services.auth.dependencies import (
     create_current_user_dependency,
     fetch_user_with_role,
 )
+from app.services.auth.mfa import build_totp_uri, generate_totp_secret, verify_totp_code
 from app.services.auth.security import PasswordHasher
 from app.services.auth.sessions import RefreshSessionService
 
@@ -72,6 +73,25 @@ class PasswordUpdateRequest(BaseModel):
 
     current_password: str
     new_password: str = Field(min_length=12, max_length=256)
+
+
+class MfaEnrollmentResponse(BaseModel):
+    """TOTP enrollment setup details."""
+
+    secret: str
+    otpauth_uri: str
+
+
+class MfaVerifyRequest(BaseModel):
+    """TOTP verification request."""
+
+    code: str = Field(min_length=6, max_length=16)
+
+
+class MfaDisableRequest(BaseModel):
+    """MFA disable request."""
+
+    current_password: str
 
 
 class PreferencesResponse(BaseModel):
@@ -258,6 +278,122 @@ def create_settings_router(
         preferences = await _get_or_create_preferences(session, user)
         await session.commit()
         return _serialize_preferences(user, preferences)
+
+    @router.post(
+        "/mfa/enrollment",
+        response_model=MfaEnrollmentResponse,
+        status_code=status.HTTP_201_CREATED,
+    )
+    async def start_mfa_enrollment(
+        http_request: Request,
+        csrf_cookie: str | None = Cookie(default=None, alias=settings.csrf_cookie_name),
+        csrf_header: str | None = Header(default=None, alias=settings.csrf_header_name),
+        auth_user: AuthenticatedUser = current_user_dependency,
+        session: AsyncSession = db_session,
+    ) -> MfaEnrollmentResponse:
+        """Start TOTP MFA enrollment for the current user."""
+        _validate_csrf(csrf_cookie=csrf_cookie, csrf_header=csrf_header)
+        user = await session.get(User, auth_user.id)
+        if user is None:
+            raise_auth_required()
+        secret = generate_totp_secret()
+        user.mfa_secret = secret
+        user.mfa_enrolled = False
+        await _record_settings_event(
+            session=session,
+            http_request=http_request,
+            user=auth_user,
+            action="settings.mfa_enrollment_start",
+            outcome="success",
+        )
+        await session.commit()
+        return MfaEnrollmentResponse(
+            secret=secret,
+            otpauth_uri=build_totp_uri(secret=secret, account_name=user.email),
+        )
+
+    @router.post("/mfa/verify", response_model=ProfileResponse)
+    async def verify_mfa_enrollment(
+        payload: MfaVerifyRequest,
+        http_request: Request,
+        csrf_cookie: str | None = Cookie(default=None, alias=settings.csrf_cookie_name),
+        csrf_header: str | None = Header(default=None, alias=settings.csrf_header_name),
+        auth_user: AuthenticatedUser = current_user_dependency,
+        session: AsyncSession = db_session,
+    ) -> ProfileResponse:
+        """Verify a TOTP code and complete MFA enrollment."""
+        _validate_csrf(csrf_cookie=csrf_cookie, csrf_header=csrf_header)
+        user_with_role = await fetch_user_with_role(session, user_id=auth_user.id)
+        if user_with_role is None:
+            raise_auth_required()
+        user, role = user_with_role
+        if user.mfa_secret is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="MFA enrollment has not been started",
+            )
+        if not verify_totp_code(user.mfa_secret, payload.code):
+            await _record_settings_event(
+                session=session,
+                http_request=http_request,
+                user=auth_user,
+                action="settings.mfa_verify",
+                outcome="failure",
+                metadata={"reason": "invalid_code"},
+            )
+            await session.commit()
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid MFA code")
+        user.mfa_enrolled = True
+        await _record_settings_event(
+            session=session,
+            http_request=http_request,
+            user=auth_user,
+            action="settings.mfa_verify",
+            outcome="success",
+        )
+        await session.commit()
+        return _serialize_profile(user, role.name)
+
+    @router.post("/mfa/disable", response_model=ProfileResponse)
+    async def disable_mfa(
+        payload: MfaDisableRequest,
+        http_request: Request,
+        csrf_cookie: str | None = Cookie(default=None, alias=settings.csrf_cookie_name),
+        csrf_header: str | None = Header(default=None, alias=settings.csrf_header_name),
+        auth_user: AuthenticatedUser = current_user_dependency,
+        session: AsyncSession = db_session,
+    ) -> ProfileResponse:
+        """Disable MFA for the current user after password confirmation."""
+        _validate_csrf(csrf_cookie=csrf_cookie, csrf_header=csrf_header)
+        user_with_role = await fetch_user_with_role(session, user_id=auth_user.id)
+        if user_with_role is None:
+            raise_auth_required()
+        user, role = user_with_role
+        if not password_hasher.verify_password(payload.current_password, user.password_hash):
+            await _record_settings_event(
+                session=session,
+                http_request=http_request,
+                user=auth_user,
+                action="settings.mfa_disable",
+                outcome="failure",
+                metadata={"reason": "invalid_current_password"},
+            )
+            await session.commit()
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Current password is incorrect",
+            )
+        user.mfa_enrolled = False
+        user.mfa_secret = None
+        await _record_settings_event(
+            session=session,
+            http_request=http_request,
+            user=auth_user,
+            action="settings.mfa_disable",
+            outcome="success",
+        )
+        await session.commit()
+        return _serialize_profile(user, role.name)
 
     @router.put("/preferences", response_model=PreferencesResponse)
     async def update_preferences(

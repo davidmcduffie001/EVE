@@ -300,6 +300,11 @@ def create_admin_router(
         if payload.display_name is not None:
             user.display_name = payload.display_name.strip()
         if payload.role_id is not None:
+            if user.email == BUILT_IN_ADMIN_EMAIL and payload.role_id != user.role_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Built-in Admin user role cannot be changed",
+                )
             role = await session.get(Role, payload.role_id)
             if role is None:
                 raise HTTPException(
@@ -331,6 +336,44 @@ def create_admin_router(
         )
         await session.commit()
         return _serialize_user(user, role)
+
+    @router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
+    async def delete_user(
+        user_id: UUID,
+        http_request: Request,
+        response: Response,
+        csrf_cookie: str | None = Cookie(default=None, alias=settings.csrf_cookie_name),
+        csrf_header: str | None = Header(default=None, alias=settings.csrf_header_name),
+        actor: AuthenticatedUser = user_manager,
+        session: AsyncSession = db_session,
+    ) -> Response:
+        """Delete a local user. Requires `users:manage`."""
+        _validate_csrf(csrf_cookie=csrf_cookie, csrf_header=csrf_header)
+        user = await session.get(User, user_id)
+        if user is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        if user.email == BUILT_IN_ADMIN_EMAIL:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Built-in Admin user cannot be deleted",
+            )
+        if actor.id == user.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Users cannot delete their own account",
+            )
+        await _record_admin_event(
+            session=session,
+            http_request=http_request,
+            actor=actor,
+            action="admin.user_delete",
+            resource_id=str(user.id),
+            metadata={"email": user.email},
+        )
+        await session.delete(user)
+        await session.commit()
+        response.status_code = status.HTTP_204_NO_CONTENT
+        return response
 
     @router.get("/roles", response_model=RoleListResponse)
     async def list_roles(

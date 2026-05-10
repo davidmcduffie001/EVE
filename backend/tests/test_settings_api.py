@@ -16,6 +16,7 @@ from app.core.database import create_sessionmaker
 from app.main import create_app
 from app.models.base import Base, RefreshSession, Role, User, UserPreference
 from app.routers.settings import _get_or_create_preferences
+from app.services.auth.mfa import generate_totp_code
 from app.services.auth.security import PasswordHasher
 from app.services.auth.sessions import RefreshSessionService
 
@@ -201,6 +202,95 @@ def test_password_update_changes_password_and_revokes_other_sessions(
     assert sessions["first"].revoked_at is None
     assert sessions["second"] is not None
     assert sessions["second"].revoked_at is not None
+
+
+def test_mfa_enrollment_verifies_totp_code(
+    settings_app: tuple[FastAPI, async_sessionmaker[AsyncSession]],
+) -> None:
+    """Users can enroll MFA by verifying a generated TOTP secret."""
+    app, sessionmaker = settings_app
+    with TestClient(app) as client:
+        _login(client)
+
+        enrollment = client.post("/settings/mfa/enrollment", headers=_csrf_headers(client))
+        secret = enrollment.json()["secret"]
+        verify = client.post(
+            "/settings/mfa/verify",
+            json={"code": generate_totp_code(secret)},
+            headers=_csrf_headers(client),
+        )
+        profile = client.get("/settings/profile")
+
+    async def fetch_user() -> User | None:
+        async with sessionmaker() as session:
+            return await session.scalar(select(User).where(User.email == "admin@example.test"))
+
+    stored_user = anyio.run(fetch_user)
+    assert enrollment.status_code == 201
+    assert enrollment.json()["otpauth_uri"].startswith("otpauth://totp/EVE%3A")
+    assert verify.status_code == 200
+    assert verify.json()["mfa_enrolled"] is True
+    assert profile.json()["mfa_enrolled"] is True
+    assert stored_user is not None
+    assert stored_user.mfa_enrolled is True
+    assert stored_user.mfa_secret == secret
+
+
+def test_mfa_verify_rejects_invalid_code(
+    settings_app: tuple[FastAPI, async_sessionmaker[AsyncSession]],
+) -> None:
+    """Enrollment remains pending when the TOTP code is invalid."""
+    app, _sessionmaker = settings_app
+    with TestClient(app) as client:
+        _login(client)
+        client.post("/settings/mfa/enrollment", headers=_csrf_headers(client))
+
+        response = client.post(
+            "/settings/mfa/verify",
+            json={"code": "000000"},
+            headers=_csrf_headers(client),
+        )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid MFA code"}
+
+
+def test_mfa_disable_requires_current_password(
+    settings_app: tuple[FastAPI, async_sessionmaker[AsyncSession]],
+) -> None:
+    """Disabling MFA requires the current password and clears the stored secret."""
+    app, sessionmaker = settings_app
+    with TestClient(app) as client:
+        _login(client)
+        enrollment = client.post("/settings/mfa/enrollment", headers=_csrf_headers(client))
+        client.post(
+            "/settings/mfa/verify",
+            json={"code": generate_totp_code(enrollment.json()["secret"])},
+            headers=_csrf_headers(client),
+        )
+
+        rejected = client.post(
+            "/settings/mfa/disable",
+            json={"current_password": "wrong-password"},
+            headers=_csrf_headers(client),
+        )
+        disabled = client.post(
+            "/settings/mfa/disable",
+            json={"current_password": "correct-password"},
+            headers=_csrf_headers(client),
+        )
+
+    async def fetch_user() -> User | None:
+        async with sessionmaker() as session:
+            return await session.scalar(select(User).where(User.email == "admin@example.test"))
+
+    stored_user = anyio.run(fetch_user)
+    assert rejected.status_code == 403
+    assert disabled.status_code == 200
+    assert disabled.json()["mfa_enrolled"] is False
+    assert stored_user is not None
+    assert stored_user.mfa_enrolled is False
+    assert stored_user.mfa_secret is None
 
 
 def test_preferences_round_trip(
