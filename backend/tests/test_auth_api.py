@@ -1,6 +1,7 @@
 """Request-level tests for authentication endpoints."""
 
 from datetime import UTC, datetime, timedelta
+from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 import anyio
@@ -10,7 +11,7 @@ from fastapi.testclient import TestClient
 from app.core.config import Settings
 from app.core.database import create_sessionmaker
 from app.main import create_app
-from app.models.base import Base, RefreshSession, Role, User
+from app.models.base import Base, RefreshSession, Role, SsoConfiguration, User
 from app.services.auth.mfa import generate_totp_code
 from app.services.auth.security import PasswordHasher
 from app.services.auth.sessions import RefreshSessionService
@@ -95,6 +96,160 @@ def test_login_sets_http_only_session_cookies(auth_client: TestClient) -> None:
     assert "eve_access_token" in auth_client.cookies
     assert "eve_refresh_token" in auth_client.cookies
     assert "eve_csrf_token" in auth_client.cookies
+
+
+@pytest.mark.asyncio
+async def test_sso_login_rejects_disabled_configuration() -> None:
+    """Browser SSO login cannot start until SSO is explicitly enabled."""
+    sessionmaker = create_sessionmaker("sqlite+aiosqlite:///:memory:")
+    async with sessionmaker.kw["bind"].begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    client = TestClient(
+        create_app(
+            settings=Settings(auth_secret_key="test-signing-key", cookie_secure=False),  # noqa: S106
+            sessionmaker=sessionmaker,
+        )
+    )
+
+    response = client.get("/auth/sso/login", follow_redirects=False)
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "SSO is not enabled"}
+    await sessionmaker.kw["bind"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_sso_login_redirects_to_oidc_authorization_endpoint() -> None:
+    """OIDC SSO login redirects to the configured identity provider."""
+    sessionmaker = create_sessionmaker("sqlite+aiosqlite:///:memory:")
+    async with sessionmaker.kw["bind"].begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    async with sessionmaker() as session:
+        session.add(
+            SsoConfiguration(
+                id="default",
+                enabled=True,
+                provider="oidc",
+                display_name="Corporate IdP",
+                issuer_url="https://idp.example.test",
+                client_id="eve-client",
+            )
+        )
+        await session.commit()
+
+    client = TestClient(
+        create_app(
+            settings=Settings(
+                auth_secret_key="test-signing-key",  # noqa: S106
+                cookie_secure=False,
+                api_base_url="http://localhost:8001",
+            ),
+            sessionmaker=sessionmaker,
+        )
+    )
+
+    response = client.get("/auth/sso/login", follow_redirects=False)
+
+    assert response.status_code == 307
+    location = response.headers["location"]
+    parsed = urlparse(location)
+    query = parse_qs(parsed.query)
+    assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == "https://idp.example.test/authorize"
+    assert query["response_type"] == ["code"]
+    assert query["client_id"] == ["eve-client"]
+    assert query["redirect_uri"] == ["http://localhost:8001/auth/sso/oidc/callback"]
+    assert query["scope"] == ["openid email profile"]
+    assert query["state"][0]
+    assert query["nonce"][0]
+    set_cookie_headers = response.headers.get_list("set-cookie")
+    assert any("eve_sso_state=" in header and "HttpOnly" in header for header in set_cookie_headers)
+    assert any("eve_sso_nonce=" in header and "HttpOnly" in header for header in set_cookie_headers)
+    await sessionmaker.kw["bind"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_oidc_callback_validates_state_before_token_exchange() -> None:
+    """OIDC callbacks must present the browser-bound state token."""
+    sessionmaker = create_sessionmaker("sqlite+aiosqlite:///:memory:")
+    async with sessionmaker.kw["bind"].begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    client = TestClient(
+        create_app(
+            settings=Settings(auth_secret_key="test-signing-key", cookie_secure=False),  # noqa: S106
+            sessionmaker=sessionmaker,
+        )
+    )
+    client.cookies.set("eve_sso_state", "expected-state")
+
+    response = client.get("/auth/sso/oidc/callback?code=abc123&state=wrong-state")
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "Invalid SSO state"}
+    await sessionmaker.kw["bind"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_saml_metadata_endpoint_returns_sp_metadata_when_saml_enabled() -> None:
+    """SAML configurations expose service-provider metadata for IdP setup."""
+    sessionmaker = create_sessionmaker("sqlite+aiosqlite:///:memory:")
+    async with sessionmaker.kw["bind"].begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    async with sessionmaker() as session:
+        session.add(
+            SsoConfiguration(
+                id="default",
+                enabled=True,
+                provider="saml",
+                display_name="Corporate SAML",
+                issuer_url="https://idp.example.test/sso",
+                client_id="eve-saml-sp",
+            )
+        )
+        await session.commit()
+
+    client = TestClient(
+        create_app(
+            settings=Settings(
+                auth_secret_key="test-signing-key",  # noqa: S106
+                cookie_secure=False,
+                api_base_url="http://localhost:8001",
+            ),
+            sessionmaker=sessionmaker,
+        )
+    )
+
+    response = client.get("/auth/sso/saml/metadata")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("application/samlmetadata+xml")
+    assert 'entityID="http://localhost:8001/auth/sso/saml/metadata"' in response.text
+    assert 'Location="http://localhost:8001/auth/sso/saml/acs"' in response.text
+    await sessionmaker.kw["bind"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_saml_acs_returns_not_implemented_until_assertion_validation_exists() -> None:
+    """SAML ACS is explicit about the remaining validation implementation."""
+    sessionmaker = create_sessionmaker("sqlite+aiosqlite:///:memory:")
+    async with sessionmaker.kw["bind"].begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    client = TestClient(
+        create_app(
+            settings=Settings(auth_secret_key="test-signing-key", cookie_secure=False),  # noqa: S106
+            sessionmaker=sessionmaker,
+        )
+    )
+
+    response = client.post("/auth/sso/saml/acs", data={"SAMLResponse": "placeholder"})
+
+    assert response.status_code == 501
+    assert response.json() == {"detail": "SAML assertion validation is not implemented yet"}
+    await sessionmaker.kw["bind"].dispose()
 
 
 def test_me_returns_current_user_from_access_cookie(auth_client: TestClient) -> None:
