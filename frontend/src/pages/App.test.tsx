@@ -1,0 +1,51 @@
+import { renderToString } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+
+import { buildAuthHeaders, getCookieValue } from "../auth/session";
+import { getPreviewUser } from "../auth/preview";
+import { App } from "./App";
+
+describe("App", () => {
+  it("renders the login workflow before a user session exists", () => {
+    const markup = renderToString(<App />);
+
+    expect(markup).toContain("Sign in to EVE");
+    expect(markup).toContain("Email address");
+    expect(markup).toContain("Password");
+  });
+
+  it("renders the authenticated dashboard when an initial user is provided", () => {
+    const markup = renderToString(
+      <App
+        initialUser={{
+          id: "user-1",
+          email: "admin@example.test",
+          display_name: "Admin User",
+          role: "Admin",
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Findings Dashboard");
+    expect(markup).toContain("Nessus Connector");
+    expect(markup).toContain("Latest Findings");
+    expect(markup).toContain("Admin User");
+  });
+
+  it("builds CSRF headers from the readable CSRF cookie", () => {
+    const headers = buildAuthHeaders("eve_access_token=opaque; eve_csrf_token=csrf-123");
+
+    expect(headers).toEqual({ "x-csrf-token": "csrf-123" });
+  });
+
+  it("returns null for missing cookies", () => {
+    expect(getCookieValue("eve_csrf_token", "eve_access_token=opaque")).toBeNull();
+  });
+
+  it("provides a dev-only dashboard preview user from the preview query", () => {
+    const previewUser = getPreviewUser("?preview=dashboard", true);
+
+    expect(previewUser?.email).toBe("admin@example.test");
+    expect(getPreviewUser("?preview=dashboard", false)).toBeNull();
+  });
+});

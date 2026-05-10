@@ -55,3 +55,9 @@ The frontend development server currently runs on port `8000`:
 cd frontend
 npm run dev -- --host 0.0.0.0
 ```
+
+The first-pass dashboard UI is available during local development at:
+
+```text
+http://localhost:8000/?preview=dashboard
+```
