@@ -79,6 +79,11 @@ type UserProfile = AuthenticatedUser & {
   created_at: string;
 };
 
+type MfaEnrollment = {
+  secret: string;
+  otpauth_uri: string;
+};
+
 type UserPreferences = {
   theme_preference: ThemePreference;
   timezone: string;
@@ -951,6 +956,8 @@ function SettingsWorkspace({
   const [profileState, setProfileState] = useState<SaveState>("idle");
   const [passwordState, setPasswordState] = useState<SaveState>("idle");
   const [preferenceState, setPreferenceState] = useState<SaveState>("idle");
+  const [mfaState, setMfaState] = useState<SaveState>("idle");
+  const [mfaEnrollment, setMfaEnrollment] = useState<MfaEnrollment | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -1063,6 +1070,63 @@ function SettingsWorkspace({
     } catch {
       setPreferenceState("failed");
       onNotify({ message: "Unable to save changes.", tone: "error" });
+    }
+  }
+
+  async function handleMfaEnrollmentStart() {
+    setMfaState("saving");
+    try {
+      const enrollment = await fetchJson<MfaEnrollment>("/settings/mfa/enrollment", {
+        method: "POST",
+      });
+      setMfaEnrollment(enrollment);
+      setMfaState("idle");
+      onNotify({ message: "MFA setup started." });
+    } catch {
+      setMfaState("failed");
+      onNotify({ message: "Unable to start MFA setup.", tone: "error" });
+    }
+  }
+
+  async function handleMfaVerifySubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    setMfaState("saving");
+    try {
+      const nextProfile = await fetchJson<UserProfile>("/settings/mfa/verify", {
+        method: "POST",
+        body: JSON.stringify({ code: formData.get("code") }),
+      });
+      setProfile(nextProfile);
+      setMfaEnrollment(null);
+      setMfaState("idle");
+      onNotify({ message: "MFA enabled." });
+      form.reset();
+    } catch {
+      setMfaState("failed");
+      onNotify({ message: "Invalid MFA code.", tone: "error" });
+    }
+  }
+
+  async function handleMfaDisableSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    setMfaState("saving");
+    try {
+      const nextProfile = await fetchJson<UserProfile>("/settings/mfa/disable", {
+        method: "POST",
+        body: JSON.stringify({ current_password: formData.get("current_password") }),
+      });
+      setProfile(nextProfile);
+      setMfaEnrollment(null);
+      setMfaState("idle");
+      onNotify({ message: "MFA disabled." });
+      form.reset();
+    } catch {
+      setMfaState("failed");
+      onNotify({ message: "Unable to disable MFA.", tone: "error" });
     }
   }
 
@@ -1197,9 +1261,58 @@ function SettingsWorkspace({
             <dd>{profile.email}</dd>
           </div>
         </dl>
-        <button className="secondary-action" type="button" disabled>
-          MFA Enrollment Pending
-        </button>
+        {!profile.mfa_enrolled ? (
+          <>
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={handleMfaEnrollmentStart}
+              disabled={mfaState === "saving"}
+            >
+              Enable MFA
+            </button>
+            {mfaEnrollment ? (
+              <div className="mfa-setup">
+                <dl className="settings-facts">
+                  <div>
+                    <dt>Setup key</dt>
+                    <dd>{mfaEnrollment.secret}</dd>
+                  </div>
+                  <div>
+                    <dt>Authenticator URI</dt>
+                    <dd>{mfaEnrollment.otpauth_uri}</dd>
+                  </div>
+                </dl>
+              </div>
+            ) : null}
+            <form className="settings-form" onSubmit={handleMfaVerifySubmit}>
+              <label>
+                Verification code
+                <input
+                  name="code"
+                  inputMode="numeric"
+                  pattern="[0-9]{6}"
+                  maxLength={6}
+                  disabled={!mfaEnrollment || mfaState === "saving"}
+                  required
+                />
+              </label>
+              <button className="primary-action" type="submit" disabled={!mfaEnrollment || mfaState === "saving"}>
+                Verify And Enable
+              </button>
+            </form>
+          </>
+        ) : (
+          <form className="settings-form" onSubmit={handleMfaDisableSubmit}>
+            <label>
+              Current password
+              <input name="current_password" type="password" autoComplete="current-password" required />
+            </label>
+            <button className="secondary-action" type="submit" disabled={mfaState === "saving"}>
+              Disable MFA
+            </button>
+          </form>
+        )}
       </section>
     </section>
   );

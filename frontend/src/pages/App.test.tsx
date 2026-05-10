@@ -50,6 +50,8 @@ describe("App", () => {
     expect(markup).toContain("Password");
     expect(markup).toContain("Preferences");
     expect(markup).toContain("MFA");
+    expect(markup).toContain("Enable MFA");
+    expect(markup).toContain("Verification code");
   });
 
   it("requires password confirmation when changing password", () => {
