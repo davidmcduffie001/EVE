@@ -5,6 +5,7 @@ from uuid import uuid4
 import anyio
 import pytest
 from fastapi.testclient import TestClient
+from httpx import Response as HttpxResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -144,6 +145,93 @@ def test_admin_can_read_and_update_persisted_sso_settings(
     assert stored.provider == "saml"
     assert stored.encrypted_client_secret is not None
     assert "super-sensitive-secret" not in stored.encrypted_client_secret
+
+
+def test_admin_can_validate_oidc_sso_configuration(
+    admin_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Admins can validate persisted OIDC discovery and JWKS settings before enabling SSO."""
+    client, sessionmaker = admin_client
+    _login(client)
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: float) -> None:
+            self.timeout = timeout
+
+        async def __aenter__(self) -> FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, url: str) -> HttpxResponse:
+            if url == "https://idp.example.test/.well-known/openid-configuration":
+                return HttpxResponse(
+                    200,
+                    json={
+                        "issuer": "https://idp.example.test",
+                        "token_endpoint": "https://idp.example.test/token",
+                        "userinfo_endpoint": "https://idp.example.test/userinfo",
+                        "jwks_uri": "https://idp.example.test/jwks",
+                    },
+                )
+            assert url == "https://idp.example.test/jwks"
+            return HttpxResponse(200, json={"keys": [{"kid": "one"}]})
+
+    monkeypatch.setattr("app.routers.admin.httpx.AsyncClient", FakeAsyncClient)
+
+    update_response = client.put(
+        "/admin/sso",
+        json={
+            "enabled": False,
+            "provider": "oidc",
+            "display_name": "Corporate IdP",
+            "issuer_url": "https://idp.example.test",
+            "client_id": "eve-client",
+            "metadata_url": "",
+            "auto_provision": False,
+            "default_role": "Analyst",
+        },
+        headers=_csrf_headers(client),
+    )
+    response = client.post("/admin/sso/validate", headers=_csrf_headers(client))
+
+    async def fetch_validation_events() -> list[AuditLog]:
+        async with sessionmaker() as session:
+            return (
+                await session.scalars(
+                    select(AuditLog).where(AuditLog.action == "admin.sso_validate")
+                )
+            ).all()
+
+    validation_events = anyio.run(fetch_validation_events)
+    payload = response.json()
+
+    assert update_response.status_code == 200
+    assert response.status_code == 200
+    assert payload["valid"] is True
+    assert payload["provider"] == "oidc"
+    assert payload["redirect_uri"] == "http://localhost:8001/auth/sso/oidc/callback"
+    assert {check["name"]: check["passed"] for check in payload["checks"]}["JWKS keys"] is True
+    assert validation_events
+    assert validation_events[-1].metadata_json["valid"] is True
+
+
+def test_admin_sso_validation_reports_missing_oidc_configuration(
+    admin_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    """SSO validation returns structured failed checks instead of a generic server error."""
+    client, _sessionmaker = admin_client
+    _login(client)
+
+    response = client.post("/admin/sso/validate", headers=_csrf_headers(client))
+    payload = response.json()
+
+    assert response.status_code == 200
+    assert payload["valid"] is False
+    assert {check["name"]: check["passed"] for check in payload["checks"]}["Issuer URL"] is False
+    assert {check["name"]: check["passed"] for check in payload["checks"]}["Client ID"] is False
 
 
 def test_non_admin_user_management_denial_is_audited(

@@ -5,8 +5,10 @@ from __future__ import annotations
 import base64
 import hmac
 from datetime import datetime
+from urllib.parse import urlparse
 from uuid import UUID
 
+import httpx
 from fastapi import (
     APIRouter,
     Cookie,
@@ -200,6 +202,23 @@ class SsoSettingsUpdateRequest(BaseModel):
     default_role: str = Field(default="Analyst", max_length=120)
 
 
+class SsoValidationCheck(BaseModel):
+    """Single SSO configuration validation check."""
+
+    name: str
+    passed: bool
+    message: str
+
+
+class SsoValidationResponse(BaseModel):
+    """Structured SSO validation result returned to administrators."""
+
+    valid: bool
+    provider: str
+    redirect_uri: str
+    checks: list[SsoValidationCheck]
+
+
 def create_admin_router(
     settings: Settings,
     sessionmaker: async_sessionmaker[AsyncSession],
@@ -288,6 +307,33 @@ def create_admin_router(
         )
         await session.commit()
         return _serialize_sso_configuration(configuration)
+
+    @router.post("/sso/validate", response_model=SsoValidationResponse)
+    async def validate_sso_settings(
+        http_request: Request,
+        csrf_cookie: str | None = Cookie(default=None, alias=settings.csrf_cookie_name),
+        csrf_header: str | None = Header(default=None, alias=settings.csrf_header_name),
+        actor: AuthenticatedUser = role_manager,
+        session: AsyncSession = db_session,
+    ) -> SsoValidationResponse:
+        """Validate current SSO configuration. Requires `roles:manage`."""
+        _validate_csrf(csrf_cookie=csrf_cookie, csrf_header=csrf_header)
+        configuration = await _get_or_create_sso_configuration(session)
+        validation = await _validate_sso_configuration(
+            settings=settings,
+            configuration=configuration,
+        )
+        await _record_admin_event(
+            session=session,
+            http_request=http_request,
+            actor=actor,
+            action="admin.sso_validate",
+            resource_type="sso",
+            resource_id="default",
+            metadata={"provider": configuration.provider, "valid": validation.valid},
+        )
+        await session.commit()
+        return validation
 
     @router.get("/users", response_model=UserListResponse)
     async def list_users(
@@ -649,6 +695,177 @@ def _serialize_sso_configuration(configuration: SsoConfiguration) -> SsoSettings
         default_role=configuration.default_role,
         client_secret_configured=configuration.encrypted_client_secret is not None,
     )
+
+
+async def _validate_sso_configuration(
+    *,
+    settings: Settings,
+    configuration: SsoConfiguration,
+) -> SsoValidationResponse:
+    checks: list[SsoValidationCheck] = []
+
+    def add_check(name: str, passed: bool, message: str) -> None:
+        checks.append(SsoValidationCheck(name=name, passed=passed, message=message))
+
+    provider = configuration.provider or "oidc"
+    add_check(
+        "Provider",
+        provider == "oidc",
+        "OpenID Connect validation is supported."
+        if provider == "oidc"
+        else "Only OpenID Connect validation is currently supported.",
+    )
+    if provider != "oidc":
+        return _sso_validation_response(settings=settings, provider=provider, checks=checks)
+
+    issuer_url = configuration.issuer_url.strip().rstrip("/")
+    client_id = configuration.client_id.strip()
+    issuer_ok = _is_https_url(issuer_url)
+    client_id_ok = bool(client_id)
+    add_check(
+        "Issuer URL",
+        issuer_ok,
+        "Issuer URL is configured."
+        if issuer_ok
+        else "Configure an HTTPS issuer URL before validating OIDC.",
+    )
+    add_check(
+        "Client ID",
+        client_id_ok,
+        "Client ID is configured." if client_id_ok else "Configure the OIDC client ID.",
+    )
+    if not issuer_ok or not client_id_ok:
+        return _sso_validation_response(settings=settings, provider=provider, checks=checks)
+
+    metadata_url = (
+        configuration.metadata_url.strip() or f"{issuer_url}/.well-known/openid-configuration"
+    )
+    if not _is_https_url(metadata_url):
+        add_check(
+            "Discovery document",
+            False,
+            "Discovery document URL must be HTTPS.",
+        )
+        return _sso_validation_response(settings=settings, provider=provider, checks=checks)
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            discovery_response = await client.get(metadata_url)
+        except httpx.HTTPError as exc:
+            add_check(
+                "Discovery document",
+                False,
+                f"Unable to fetch discovery document: {exc.__class__.__name__}.",
+            )
+            return _sso_validation_response(settings=settings, provider=provider, checks=checks)
+
+        if discovery_response.status_code >= 400:
+            add_check(
+                "Discovery document",
+                False,
+                f"Discovery document returned HTTP {discovery_response.status_code}.",
+            )
+            return _sso_validation_response(settings=settings, provider=provider, checks=checks)
+
+        try:
+            discovery = discovery_response.json()
+        except ValueError:
+            add_check("Discovery document", False, "Discovery document is not valid JSON.")
+            return _sso_validation_response(settings=settings, provider=provider, checks=checks)
+
+        if not isinstance(discovery, dict):
+            add_check("Discovery document", False, "Discovery document must be a JSON object.")
+            return _sso_validation_response(settings=settings, provider=provider, checks=checks)
+
+        add_check("Discovery document", True, "Discovery document was fetched.")
+        discovered_issuer = discovery.get("issuer")
+        add_check(
+            "Issuer match",
+            discovered_issuer == issuer_url,
+            "Discovery issuer matches the configured issuer URL."
+            if discovered_issuer == issuer_url
+            else "Discovery issuer does not match the configured issuer URL.",
+        )
+
+        token_endpoint = _validate_oidc_endpoint(discovery, "token_endpoint")
+        userinfo_endpoint = _validate_oidc_endpoint(discovery, "userinfo_endpoint")
+        jwks_uri = _validate_oidc_endpoint(discovery, "jwks_uri")
+        add_check(
+            "Token endpoint",
+            token_endpoint is not None,
+            "Token endpoint is an HTTPS URL."
+            if token_endpoint is not None
+            else "Discovery document must include an HTTPS token_endpoint.",
+        )
+        add_check(
+            "UserInfo endpoint",
+            userinfo_endpoint is not None,
+            "UserInfo endpoint is an HTTPS URL."
+            if userinfo_endpoint is not None
+            else "Discovery document must include an HTTPS userinfo_endpoint.",
+        )
+        add_check(
+            "JWKS URI",
+            jwks_uri is not None,
+            "JWKS URI is an HTTPS URL."
+            if jwks_uri is not None
+            else "Discovery document must include an HTTPS jwks_uri.",
+        )
+        if jwks_uri is None:
+            return _sso_validation_response(settings=settings, provider=provider, checks=checks)
+
+        try:
+            jwks_response = await client.get(jwks_uri)
+        except httpx.HTTPError as exc:
+            add_check("JWKS keys", False, f"Unable to fetch JWKS: {exc.__class__.__name__}.")
+            return _sso_validation_response(settings=settings, provider=provider, checks=checks)
+
+        if jwks_response.status_code >= 400:
+            add_check("JWKS keys", False, f"JWKS returned HTTP {jwks_response.status_code}.")
+            return _sso_validation_response(settings=settings, provider=provider, checks=checks)
+
+        try:
+            jwks = jwks_response.json()
+        except ValueError:
+            add_check("JWKS keys", False, "JWKS response is not valid JSON.")
+            return _sso_validation_response(settings=settings, provider=provider, checks=checks)
+
+        keys = jwks.get("keys") if isinstance(jwks, dict) else None
+        add_check(
+            "JWKS keys",
+            isinstance(keys, list) and len(keys) > 0,
+            "JWKS contains signing keys."
+            if isinstance(keys, list) and len(keys) > 0
+            else "JWKS must contain at least one signing key.",
+        )
+
+    return _sso_validation_response(settings=settings, provider=provider, checks=checks)
+
+
+def _sso_validation_response(
+    *,
+    settings: Settings,
+    provider: str,
+    checks: list[SsoValidationCheck],
+) -> SsoValidationResponse:
+    return SsoValidationResponse(
+        valid=all(check.passed for check in checks),
+        provider=provider,
+        redirect_uri=f"{str(settings.api_base_url).rstrip('/')}/auth/sso/oidc/callback",
+        checks=checks,
+    )
+
+
+def _validate_oidc_endpoint(discovery: dict, key: str) -> str | None:
+    value = discovery.get(key)
+    if not isinstance(value, str) or not _is_https_url(value):
+        return None
+    return value
+
+
+def _is_https_url(value: str) -> bool:
+    parsed = urlparse(value)
+    return parsed.scheme == "https" and bool(parsed.netloc)
 
 
 def _encrypt_sso_secret(*, settings: Settings, secret: str) -> str:

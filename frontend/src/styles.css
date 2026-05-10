@@ -856,6 +856,7 @@ td > select {
 }
 
 .settings-form .primary-action,
+.settings-form .secondary-action,
 .settings-form .form-error,
 .settings-form .form-note,
 .settings-form .form-success {
@@ -875,6 +876,51 @@ td > select {
 
 .form-success {
   color: #75dcc8;
+}
+
+.sso-validation-results {
+  grid-column: 1 / -1;
+  border: 1px solid #2a383b;
+  border-radius: 8px;
+  background: #0f1517;
+  padding: 14px;
+}
+
+.sso-validation-results > strong {
+  display: block;
+  margin-bottom: 10px;
+  color: #f0f6f7;
+  font-size: 14px;
+}
+
+.sso-validation-results ul {
+  display: grid;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sso-validation-results li {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  color: #cbd6d9;
+  font-size: 13px;
+}
+
+.sso-validation-results li.passed svg {
+  color: #75dcc8;
+}
+
+.sso-validation-results li.failed svg {
+  color: #ffaf73;
+}
+
+.sso-validation-results b {
+  display: block;
+  color: #f0f6f7;
 }
 
 .toast {
@@ -1039,6 +1085,20 @@ td > select {
 .theme-light .secondary-action {
   border-color: #bfd3d7;
   background: #edf6f6;
+}
+
+.theme-light .sso-validation-results {
+  border-color: #c9d9dc;
+  background: #f8fbfb;
+}
+
+.theme-light .sso-validation-results > strong,
+.theme-light .sso-validation-results b {
+  color: #172124;
+}
+
+.theme-light .sso-validation-results li {
+  color: #41565c;
 }
 
 .theme-light .severity-pill.critical {
