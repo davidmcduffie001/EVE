@@ -634,7 +634,7 @@ tbody tr:hover {
 }
 
 .admin-table-wrap table {
-  min-width: 760px;
+  min-width: 900px;
   table-layout: fixed;
 }
 
@@ -660,7 +660,12 @@ tbody tr:hover {
 
 .admin-table-wrap th:nth-child(5),
 .admin-table-wrap td:nth-child(5) {
-  width: 24%;
+  width: 11%;
+}
+
+.admin-table-wrap th:nth-child(6),
+.admin-table-wrap td:nth-child(6) {
+  width: 29%;
 }
 
 .table-edit-form {
@@ -683,6 +688,7 @@ td > select {
 
 .table-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   min-width: 162px;
 }
@@ -869,6 +875,20 @@ td > select {
   display: grid;
   gap: 10px;
   margin: 0 0 18px;
+}
+
+.mfa-setup {
+  display: grid;
+  gap: 12px;
+}
+
+.mfa-qr-code {
+  width: 180px;
+  height: 180px;
+  border: 1px solid #2d3d41;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 8px;
 }
 
 .settings-facts div {

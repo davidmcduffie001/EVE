@@ -10,6 +10,7 @@ from app.core.config import Settings
 from app.core.database import create_sessionmaker
 from app.main import create_app
 from app.models.base import Base, RefreshSession, Role, User
+from app.services.auth.mfa import generate_totp_code
 from app.services.auth.security import PasswordHasher
 from app.services.auth.sessions import RefreshSessionService
 
@@ -83,6 +84,7 @@ def test_login_sets_http_only_session_cookies(auth_client: TestClient) -> None:
         "email": "admin@example.test",
         "display_name": "Admin User",
         "role": "Admin",
+        "permissions": ["*"],
     }
     set_cookie_headers = response.headers.get_list("set-cookie")
     assert any(
@@ -109,6 +111,101 @@ def test_me_returns_current_user_from_access_cookie(auth_client: TestClient) -> 
     assert response.status_code == 200
     assert response.json()["email"] == "admin@example.test"
     assert response.json()["role"] == "Admin"
+    assert response.json()["permissions"] == ["*"]
+
+
+@pytest.mark.asyncio
+async def test_disabled_account_login_returns_specific_error() -> None:
+    """Disabled users receive a distinct login error for the UI."""
+    sessionmaker = create_sessionmaker("sqlite+aiosqlite:///:memory:")
+    async with sessionmaker.kw["bind"].begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    async with sessionmaker() as session:
+        role = Role(id=uuid4(), name="Admin", is_system_role=True, permissions=["*"])
+        user = User(
+            id=uuid4(),
+            email="disabled@example.test",
+            display_name="Disabled User",
+            role_id=role.id,
+            password_hash=PasswordHasher().hash_password("correct-password"),
+            disabled_at=datetime.now(UTC),
+        )
+        session.add_all([role, user])
+        await session.commit()
+
+    client = TestClient(
+        create_app(
+            settings=Settings(auth_secret_key="test-key"),  # noqa: S106
+            sessionmaker=sessionmaker,
+        )
+    )
+    response = client.post(
+        "/auth/login",
+        json={"email": "disabled@example.test", "password": "correct-password"},
+    )
+
+    assert response.status_code == 403
+    assert response.json() == {"detail": "Account is disabled"}
+    await sessionmaker.kw["bind"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_mfa_enabled_user_must_verify_code_before_session_is_issued() -> None:
+    """MFA-enabled users complete login only after TOTP verification."""
+    sessionmaker = create_sessionmaker("sqlite+aiosqlite:///:memory:")
+    async with sessionmaker.kw["bind"].begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    secret = "JBSWY3DPEHPK3PXP"  # noqa: S105
+    async with sessionmaker() as session:
+        role = Role(id=uuid4(), name="Admin", is_system_role=True, permissions=["*"])
+        user = User(
+            id=uuid4(),
+            email="admin@example.test",
+            display_name="Admin User",
+            role_id=role.id,
+            password_hash=PasswordHasher().hash_password("correct-password"),
+            mfa_enrolled=True,
+            mfa_secret=secret,
+        )
+        session.add_all([role, user])
+        await session.commit()
+
+    client = TestClient(
+        create_app(
+            settings=Settings(auth_secret_key="test-signing-key", cookie_secure=False),  # noqa: S106
+            sessionmaker=sessionmaker,
+        )
+    )
+    login = client.post(
+        "/auth/login",
+        json={"email": "admin@example.test", "password": "correct-password"},
+    )
+
+    assert login.status_code == 202
+    assert login.json()["mfa_required"] is True
+    assert "mfa_challenge_token" in login.json()
+    assert "eve_access_token" not in client.cookies
+
+    rejected = client.post(
+        "/auth/mfa/verify",
+        json={"mfa_challenge_token": login.json()["mfa_challenge_token"], "code": "000000"},
+    )
+    verified = client.post(
+        "/auth/mfa/verify",
+        json={
+            "mfa_challenge_token": login.json()["mfa_challenge_token"],
+            "code": generate_totp_code(secret),
+        },
+    )
+
+    assert rejected.status_code == 401
+    assert rejected.json() == {"detail": "Invalid MFA code"}
+    assert verified.status_code == 200
+    assert verified.json()["user"]["email"] == "admin@example.test"
+    assert "eve_access_token" in client.cookies
+    await sessionmaker.kw["bind"].dispose()
 
 
 def test_me_requires_valid_access_cookie(auth_client: TestClient) -> None:

@@ -21,7 +21,7 @@ def build_totp_uri(*, secret: str, account_name: str, issuer: str = "EVE") -> st
     label = f"{issuer}:{account_name}"
     return (
         f"otpauth://totp/{quote(label)}"
-        f"?secret={quote(secret)}&issuer={quote(issuer)}&algorithm=SHA1&digits=6&period=30"
+        f"?secret={quote(secret)}&issuer={quote(issuer)}&algorithm=SHA256&digits=6&period=30"
     )
 
 
@@ -30,7 +30,7 @@ def generate_totp_code(secret: str, *, for_time: int | None = None) -> str:
     padded_secret = secret + "=" * ((8 - len(secret) % 8) % 8)
     key = base64.b32decode(padded_secret, casefold=True)
     counter = int((time.time() if for_time is None else for_time) // 30)
-    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha256).digest()
     offset = digest[-1] & 0x0F
     value = struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF
     return f"{value % 1_000_000:06d}"

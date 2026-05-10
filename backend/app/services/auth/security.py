@@ -34,6 +34,16 @@ class AccessTokenClaims:
     issued_at: datetime
 
 
+@dataclass(frozen=True)
+class MfaChallengeClaims:
+    """Verified MFA challenge-token claims."""
+
+    subject: str
+    token_type: str
+    expires_at: datetime
+    issued_at: datetime
+
+
 class PasswordHasher:
     """Password hashing and verification using stdlib PBKDF2-HMAC-SHA256."""
 
@@ -78,6 +88,7 @@ class TokenSigner:
         """Initialize the signer from application settings."""
         self._secret = settings.auth_secret_key.encode("utf-8")
         self._access_token_ttl = timedelta(seconds=settings.access_token_ttl_seconds)
+        self._mfa_challenge_ttl = timedelta(minutes=5)
 
     def create_access_token(self, *, user_id: UUID, role_name: str) -> str:
         """Create a signed access token for a user and role."""
@@ -101,6 +112,19 @@ class TokenSigner:
             hmac.digest(self._secret, signing_input.encode("ascii"), "sha256")
         )
         return f"{signing_input}.{signature}"
+
+    def create_mfa_challenge_token(self, *, user_id: UUID) -> str:
+        """Create a short-lived signed token for completing MFA login."""
+        issued_at = datetime.now(UTC)
+        expires_at = issued_at + self._mfa_challenge_ttl
+        return self._create_token(
+            {
+                "sub": str(user_id),
+                "typ": "mfa_challenge",
+                "iat": int(issued_at.timestamp()),
+                "exp": int(expires_at.timestamp()),
+            }
+        )
 
     def verify_access_token(self, token: str) -> AccessTokenClaims:
         """Verify a signed access token and return its claims."""
@@ -132,6 +156,48 @@ class TokenSigner:
             )
         except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             raise InvalidTokenError("Invalid token") from exc
+
+    def verify_mfa_challenge_token(self, token: str) -> MfaChallengeClaims:
+        """Verify a signed MFA challenge token and return its claims."""
+        try:
+            payload = self._verify_token(token, expected_type="mfa_challenge")
+            expires_at = datetime.fromtimestamp(int(payload["exp"]), UTC)
+            issued_at = datetime.fromtimestamp(int(payload["iat"]), UTC)
+            return MfaChallengeClaims(
+                subject=str(payload["sub"]),
+                token_type=str(payload["typ"]),
+                expires_at=expires_at,
+                issued_at=issued_at,
+            )
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise InvalidTokenError("Invalid token") from exc
+
+    def _create_token(self, payload: dict[str, object]) -> str:
+        header = {"alg": JOSE_HMAC_SHA256_ALGORITHM, "typ": "JWT"}
+        signing_input = ".".join([_base64url_json(header), _base64url_json(payload)])
+        signature = _base64url_encode(
+            hmac.digest(self._secret, signing_input.encode("ascii"), "sha256")
+        )
+        return f"{signing_input}.{signature}"
+
+    def _verify_token(self, token: str, *, expected_type: str) -> dict[str, object]:
+        header_text, payload_text, signature_text = token.split(".", 2)
+        signing_input = f"{header_text}.{payload_text}"
+        expected_signature = _base64url_encode(
+            hmac.digest(self._secret, signing_input.encode("ascii"), "sha256")
+        )
+        if not hmac.compare_digest(signature_text, expected_signature):
+            raise InvalidTokenError("Invalid token signature")
+
+        header = json.loads(_base64url_decode(header_text))
+        payload = json.loads(_base64url_decode(payload_text))
+        if header.get("alg") != JOSE_HMAC_SHA256_ALGORITHM or payload.get("typ") != expected_type:
+            raise InvalidTokenError("Unsupported token")
+
+        expires_at = datetime.fromtimestamp(int(payload["exp"]), UTC)
+        if expires_at <= datetime.now(UTC):
+            raise InvalidTokenError("Token expired")
+        return payload
 
 
 def _base64url_json(value: dict[str, object]) -> str:

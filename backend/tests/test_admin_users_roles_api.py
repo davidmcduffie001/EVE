@@ -185,7 +185,8 @@ def test_admin_can_disable_user_and_disabled_user_cannot_login(
 
     assert disable_response.status_code == 200
     assert disable_response.json()["disabled"] is True
-    assert login_response.status_code == 401
+    assert login_response.status_code == 403
+    assert login_response.json() == {"detail": "Account is disabled"}
 
 
 def test_built_in_admin_user_cannot_be_disabled(
@@ -274,3 +275,43 @@ def test_built_in_admin_user_cannot_be_deleted(
 
     assert response.status_code == 400
     assert response.json() == {"detail": "Built-in Admin user cannot be deleted"}
+
+
+def test_admin_can_clear_user_mfa_configuration(
+    admin_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    """Admins can reset another user's MFA enrollment."""
+    client, sessionmaker = admin_client
+    _login(client)
+
+    async def enroll_analyst_mfa() -> None:
+        async with sessionmaker() as session:
+            analyst = await session.scalar(
+                select(User).where(User.email == "analyst@example.test")
+            )
+            assert analyst is not None
+            analyst.mfa_enrolled = True
+            analyst.mfa_secret = "JBSWY3DPEHPK3PXP"  # noqa: S105
+            await session.commit()
+
+    anyio.run(enroll_analyst_mfa)
+    users_response = client.get("/admin/users")
+    analyst = next(
+        user for user in users_response.json()["items"] if user["email"] == "analyst@example.test"
+    )
+
+    response = client.delete(
+        f"/admin/users/{analyst['id']}/mfa",
+        headers=_csrf_headers(client),
+    )
+
+    async def fetch_analyst() -> User | None:
+        async with sessionmaker() as session:
+            return await session.scalar(select(User).where(User.email == "analyst@example.test"))
+
+    stored_analyst = anyio.run(fetch_analyst)
+    assert response.status_code == 200
+    assert response.json()["mfa_enrolled"] is False
+    assert stored_analyst is not None
+    assert stored_analyst.mfa_enrolled is False
+    assert stored_analyst.mfa_secret is None
