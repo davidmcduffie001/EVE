@@ -26,4 +26,3 @@ class ScannerConnector(ABC):
     @abstractmethod
     async def sync(self) -> None:
         """Run an end-to-end scanner synchronization."""
-
