@@ -1,0 +1,18 @@
+image:
+  backend:
+    repository: eve-backend
+    tag: "0.1.0"
+  frontend:
+    repository: eve-frontend
+    tag: "0.1.0"
+
+ingress:
+  enabled: false
+  className: nginx
+
+postgresql:
+  externalUrl: ""
+
+redis:
+  externalUrl: ""
+
