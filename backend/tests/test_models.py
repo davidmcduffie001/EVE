@@ -20,6 +20,7 @@ def test_phase_1_metadata_contains_expected_tables() -> None:
         "scan_targets",
         "scanner_integrations",
         "scans",
+        "sso_configurations",
         "targets",
         "user_preferences",
         "refresh_sessions",

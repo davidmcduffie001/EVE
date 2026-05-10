@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hmac
 from datetime import datetime
 from uuid import UUID
@@ -23,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
 from app.core.database import get_db_session
-from app.models.base import AuditLog, Role, User, utc_now
+from app.models.base import AuditLog, Role, SsoConfiguration, User, utc_now
 from app.services.audit import AuditLogService
 from app.services.auth.dependencies import (
     AuthenticatedUser,
@@ -199,9 +200,6 @@ class SsoSettingsUpdateRequest(BaseModel):
     default_role: str = Field(default="Analyst", max_length=120)
 
 
-_sso_settings = SsoSettingsResponse()
-
-
 def create_admin_router(
     settings: Settings,
     sessionmaker: async_sessionmaker[AsyncSession],
@@ -246,9 +244,11 @@ def create_admin_router(
     @router.get("/sso", response_model=SsoSettingsResponse)
     async def get_sso_settings(
         _user: AuthenticatedUser = role_manager,
+        session: AsyncSession = db_session,
     ) -> SsoSettingsResponse:
-        """Return stubbed SSO configuration. Requires `roles:manage`."""
-        return _sso_settings
+        """Return SSO configuration. Requires `roles:manage`."""
+        configuration = await _get_or_create_sso_configuration(session)
+        return _serialize_sso_configuration(configuration)
 
     @router.put("/sso", response_model=SsoSettingsResponse)
     async def update_sso_settings(
@@ -259,21 +259,24 @@ def create_admin_router(
         actor: AuthenticatedUser = role_manager,
         session: AsyncSession = db_session,
     ) -> SsoSettingsResponse:
-        """Update stubbed SSO configuration. Requires `roles:manage`."""
+        """Update SSO configuration. Requires `roles:manage`."""
         _validate_csrf(csrf_cookie=csrf_cookie, csrf_header=csrf_header)
-        global _sso_settings
-        _sso_settings = SsoSettingsResponse(
-            enabled=payload.enabled,
-            provider=payload.provider,
-            display_name=payload.display_name.strip(),
-            issuer_url=payload.issuer_url.strip(),
-            client_id=payload.client_id.strip(),
-            metadata_url=payload.metadata_url.strip(),
-            auto_provision=payload.auto_provision,
-            default_role=payload.default_role.strip(),
-            client_secret_configured=bool(payload.client_secret)
-            or _sso_settings.client_secret_configured,
-        )
+        configuration = await _get_or_create_sso_configuration(session)
+        configuration.enabled = payload.enabled
+        configuration.provider = payload.provider
+        configuration.display_name = payload.display_name.strip()
+        configuration.issuer_url = payload.issuer_url.strip()
+        configuration.client_id = payload.client_id.strip()
+        configuration.metadata_url = payload.metadata_url.strip()
+        configuration.auto_provision = payload.auto_provision
+        configuration.default_role = payload.default_role.strip()
+        configuration.updated_at = utc_now()
+        configuration.updated_by = actor.id
+        if payload.client_secret:
+            configuration.encrypted_client_secret = _encrypt_sso_secret(
+                settings=settings,
+                secret=payload.client_secret,
+            )
         await _record_admin_event(
             session=session,
             http_request=http_request,
@@ -281,10 +284,10 @@ def create_admin_router(
             action="admin.sso_update",
             resource_type="sso",
             resource_id="default",
-            metadata={"enabled": _sso_settings.enabled, "provider": _sso_settings.provider},
+            metadata={"enabled": configuration.enabled, "provider": configuration.provider},
         )
         await session.commit()
-        return _sso_settings
+        return _serialize_sso_configuration(configuration)
 
     @router.get("/users", response_model=UserListResponse)
     async def list_users(
@@ -623,6 +626,42 @@ def _serialize_user(user: User, role: Role) -> UserResponse:
         mfa_enrolled=user.mfa_enrolled,
         created_at=user.created_at,
     )
+
+
+async def _get_or_create_sso_configuration(session: AsyncSession) -> SsoConfiguration:
+    configuration = await session.get(SsoConfiguration, "default")
+    if configuration is None:
+        configuration = SsoConfiguration(id="default")
+        session.add(configuration)
+        await session.flush()
+    return configuration
+
+
+def _serialize_sso_configuration(configuration: SsoConfiguration) -> SsoSettingsResponse:
+    return SsoSettingsResponse(
+        enabled=configuration.enabled,
+        provider=configuration.provider,
+        display_name=configuration.display_name,
+        issuer_url=configuration.issuer_url,
+        client_id=configuration.client_id,
+        metadata_url=configuration.metadata_url,
+        auto_provision=configuration.auto_provision,
+        default_role=configuration.default_role,
+        client_secret_configured=configuration.encrypted_client_secret is not None,
+    )
+
+
+def _encrypt_sso_secret(*, settings: Settings, secret: str) -> str:
+    key = settings.auth_secret_key.encode("utf-8")
+    plaintext = secret.encode("utf-8")
+    keystream = bytearray()
+    counter = 0
+    while len(keystream) < len(plaintext):
+        counter_bytes = counter.to_bytes(4, "big")
+        keystream.extend(hmac.digest(key, counter_bytes, "sha256"))
+        counter += 1
+    ciphertext = bytes(value ^ keystream[index] for index, value in enumerate(plaintext))
+    return "v1:" + base64.urlsafe_b64encode(ciphertext).decode("ascii")
 
 
 def _validate_permissions(permissions: list[str]) -> None:
