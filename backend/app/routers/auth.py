@@ -5,16 +5,18 @@ from __future__ import annotations
 import hmac
 import secrets
 from datetime import UTC, datetime, timedelta
+from urllib.parse import urlencode
 from uuid import UUID
+from xml.sax.saxutils import quoteattr
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
 from app.core.database import get_db_session
-from app.models.base import Role, User
+from app.models.base import Role, SsoConfiguration, User
 from app.services.audit import AuditLogService
 from app.services.auth.dependencies import (
     AuthenticatedUser,
@@ -26,6 +28,10 @@ from app.services.auth.mfa import verify_totp_code
 from app.services.auth.permissions import PERMISSIONS
 from app.services.auth.security import InvalidTokenError, PasswordHasher, TokenSigner
 from app.services.auth.sessions import RefreshSessionService
+
+SSO_STATE_COOKIE = "eve_sso_state"
+SSO_NONCE_COOKIE = "eve_sso_nonce"
+SSO_COOKIE_TTL_SECONDS = 300
 
 
 class LoginRequest(BaseModel):
@@ -191,6 +197,112 @@ def create_auth_router(
             token_signer=token_signer,
             user=user,
             role=role,
+        )
+
+    @router.get("/sso/login", response_model=None)
+    async def sso_login(session: AsyncSession = db_session) -> RedirectResponse:
+        """Begin browser SSO against the configured identity provider."""
+        configuration = await _require_enabled_sso(session)
+        if configuration.provider == "saml":
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail="SAML login initiation is not implemented yet",
+            )
+
+        if not configuration.client_id.strip() or not configuration.issuer_url.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="OIDC SSO is missing issuer URL or client ID",
+            )
+
+        state_token = secrets.token_urlsafe(32)
+        nonce_token = secrets.token_urlsafe(32)
+        authorization_url = _oidc_authorization_url(
+            settings=settings,
+            configuration=configuration,
+            state_token=state_token,
+            nonce_token=nonce_token,
+        )
+        redirect = RedirectResponse(authorization_url)
+        _set_cookie(
+            redirect,
+            settings=settings,
+            name=SSO_STATE_COOKIE,
+            value=state_token,
+            max_age=SSO_COOKIE_TTL_SECONDS,
+        )
+        _set_cookie(
+            redirect,
+            settings=settings,
+            name=SSO_NONCE_COOKIE,
+            value=nonce_token,
+            max_age=SSO_COOKIE_TTL_SECONDS,
+        )
+        return redirect
+
+    @router.get("/sso/oidc/callback")
+    async def oidc_callback(
+        state: str | None = None,
+        code: str | None = None,
+        error: str | None = None,
+        state_cookie: str | None = Cookie(default=None, alias=SSO_STATE_COOKIE),
+    ) -> None:
+        """Receive the OIDC authorization callback."""
+        if error:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="SSO identity provider rejected the login request",
+            )
+        if not state or not state_cookie or not hmac.compare_digest(state, state_cookie):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid SSO state")
+        if not code:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing OIDC code")
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="OIDC token exchange is not implemented yet",
+        )
+
+    @router.get("/sso/saml/metadata")
+    async def saml_metadata(session: AsyncSession = db_session) -> Response:
+        """Return service-provider metadata for SAML IdP configuration."""
+        configuration = await _require_enabled_sso(session)
+        if configuration.provider != "saml":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="SAML SSO is not configured",
+            )
+
+        metadata_url = _api_url(settings, "/auth/sso/saml/metadata")
+        acs_url = _api_url(settings, "/auth/sso/saml/acs")
+        xml = "\n".join(
+            [
+                '<?xml version="1.0" encoding="UTF-8"?>',
+                (
+                    '<EntityDescriptor xmlns="urn:oasis:names:tc:SAML:2.0:metadata" '
+                    f"entityID={quoteattr(metadata_url)}>"
+                ),
+                (
+                    '  <SPSSODescriptor protocolSupportEnumeration='
+                    '"urn:oasis:names:tc:SAML:2.0:protocol">'
+                ),
+                (
+                    '    <AssertionConsumerService '
+                    'Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" '
+                    f"Location={quoteattr(acs_url)} index=\"0\" isDefault=\"true\" />"
+                ),
+                "  </SPSSODescriptor>",
+                "</EntityDescriptor>",
+                "",
+            ]
+        )
+        return Response(content=xml, media_type="application/samlmetadata+xml")
+
+    @router.post("/sso/saml/acs")
+    async def saml_acs() -> None:
+        """Receive SAML assertions once XML validation is implemented."""
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="SAML assertion validation is not implemented yet",
         )
 
     @router.post("/refresh", response_model=AuthResponse)
@@ -389,6 +501,38 @@ def _set_cookie(
         secure=settings.cookie_secure,
         samesite=settings.cookie_samesite,
     )
+
+
+async def _require_enabled_sso(session: AsyncSession) -> SsoConfiguration:
+    configuration = await session.get(SsoConfiguration, "default")
+    if configuration is None or not configuration.enabled:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="SSO is not enabled")
+    return configuration
+
+
+def _oidc_authorization_url(
+    *,
+    settings: Settings,
+    configuration: SsoConfiguration,
+    state_token: str,
+    nonce_token: str,
+) -> str:
+    issuer_url = configuration.issuer_url.strip().rstrip("/")
+    query = urlencode(
+        {
+            "response_type": "code",
+            "client_id": configuration.client_id.strip(),
+            "redirect_uri": _api_url(settings, "/auth/sso/oidc/callback"),
+            "scope": "openid email profile",
+            "state": state_token,
+            "nonce": nonce_token,
+        }
+    )
+    return f"{issuer_url}/authorize?{query}"
+
+
+def _api_url(settings: Settings, path: str) -> str:
+    return f"{str(settings.api_base_url).rstrip('/')}{path}"
 
 
 def _clear_auth_cookies(response: Response, settings: Settings) -> None:
