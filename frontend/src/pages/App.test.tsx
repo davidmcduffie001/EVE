@@ -22,6 +22,7 @@ describe("App", () => {
           email: "admin@example.test",
           display_name: "Admin User",
           role: "Admin",
+          permissions: ["*"],
         }}
       />,
     );
@@ -41,6 +42,7 @@ describe("App", () => {
           email: "admin@example.test",
           display_name: "Admin User",
           role: "Admin",
+          permissions: ["*"],
         }}
       />,
     );
@@ -52,6 +54,7 @@ describe("App", () => {
     expect(markup).toContain("MFA");
     expect(markup).toContain("Enable MFA");
     expect(markup).toContain("Verification code");
+    expect(markup).toContain("Scan QR code");
   });
 
   it("requires password confirmation when changing password", () => {
@@ -63,6 +66,7 @@ describe("App", () => {
           email: "admin@example.test",
           display_name: "Admin User",
           role: "Admin",
+          permissions: ["users:manage", "roles:manage"],
         }}
       />,
     );
@@ -83,6 +87,7 @@ describe("App", () => {
             display_name: "Admin User",
             role: { id: "role-1", name: "Admin" },
             disabled: false,
+            mfa_enrolled: false,
             created_at: "2026-01-01T00:00:00Z",
           },
         ]}
@@ -105,6 +110,7 @@ describe("App", () => {
           email: "admin@example.test",
           display_name: "Admin User",
           role: "Admin",
+          permissions: ["*"],
         }}
       />,
     );
@@ -115,6 +121,80 @@ describe("App", () => {
     expect(markup).toContain("Create Role");
     expect(markup).toContain("admin@example.test");
     expect(markup).toContain("Triage");
+  });
+
+  it("hides administration navigation from users without administrative permissions", () => {
+    const markup = renderToString(
+      <App
+        initialUser={{
+          id: "user-2",
+          email: "analyst@example.test",
+          display_name: "Analyst User",
+          role: "Analyst",
+          permissions: ["findings:read"],
+        }}
+      />,
+    );
+
+    expect(markup).not.toContain("Administration");
+    expect(markup).not.toContain("Local Users");
+  });
+
+  it("shows only user administration for users with users:manage", () => {
+    const markup = renderToString(
+      <App
+        initialView="admin"
+        initialUser={{
+          id: "user-2",
+          email: "user-admin@example.test",
+          display_name: "User Admin",
+          role: "User Manager",
+          permissions: ["users:manage"],
+        }}
+        initialAdminRoles={[
+          {
+            id: "role-1",
+            name: "Analyst",
+            is_system_role: true,
+            permissions: ["findings:read"],
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Administration");
+    expect(markup).toContain("Local Users");
+    expect(markup).toContain("Create User");
+    expect(markup).not.toContain("Create Role");
+  });
+
+  it("shows only role administration for users with roles:manage", () => {
+    const markup = renderToString(
+      <App
+        initialView="admin"
+        initialUser={{
+          id: "user-3",
+          email: "role-admin@example.test",
+          display_name: "Role Admin",
+          role: "Role Manager",
+          permissions: ["roles:manage"],
+        }}
+        initialAdminRoles={[
+          {
+            id: "role-2",
+            name: "Triage",
+            is_system_role: false,
+            permissions: ["findings:read"],
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Administration");
+    expect(markup).toContain("Roles");
+    expect(markup).toContain("Create Role");
+    expect(markup).not.toContain("Local Users");
+    expect(markup).not.toContain("Create User");
   });
 
   it("does not allow disabling the built-in Admin user from the UI", () => {
@@ -128,6 +208,7 @@ describe("App", () => {
             display_name: "Admin User",
             role: { id: "role-1", name: "Admin" },
             disabled: false,
+            mfa_enrolled: false,
             created_at: "2026-01-01T00:00:00Z",
           },
         ]}
@@ -144,6 +225,7 @@ describe("App", () => {
           email: "admin@example.test",
           display_name: "Admin User",
           role: "Admin",
+          permissions: ["*"],
         }}
       />,
     );
@@ -163,6 +245,7 @@ describe("App", () => {
             display_name: "Admin User",
             role: { id: "role-1", name: "Admin" },
             disabled: false,
+            mfa_enrolled: false,
             created_at: "2026-01-01T00:00:00Z",
           },
           {
@@ -171,6 +254,7 @@ describe("App", () => {
             display_name: "Analyst User",
             role: { id: "role-2", name: "Analyst" },
             disabled: true,
+            mfa_enrolled: false,
             created_at: "2026-01-01T00:00:00Z",
           },
         ]}
@@ -193,6 +277,7 @@ describe("App", () => {
           email: "admin@example.test",
           display_name: "Admin User",
           role: "Admin",
+          permissions: ["*"],
         }}
       />,
     );
@@ -258,6 +343,32 @@ describe("App", () => {
     expect(markup).toContain("MM/DD/YYYY");
     expect(markup).not.toContain("Landing page");
     expect(markup).not.toContain("default_landing_page");
+  });
+
+  it("labels the create user password field as Password", () => {
+    const markup = renderToString(
+      <App
+        initialView="admin"
+        initialUser={{
+          id: "user-1",
+          email: "admin@example.test",
+          display_name: "Admin User",
+          role: "Admin",
+          permissions: ["users:manage"],
+        }}
+        initialAdminRoles={[
+          {
+            id: "role-1",
+            name: "Admin",
+            is_system_role: true,
+            permissions: ["users:manage"],
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Password");
+    expect(markup).not.toContain("Temporary password");
   });
 
   it("builds CSRF headers from the readable CSRF cookie", () => {

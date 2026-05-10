@@ -35,6 +35,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import QRCode from "qrcode";
 
 import eveLogo from "../assets/eve-logo.png";
 import { getPreviewUser } from "../auth/preview";
@@ -47,6 +48,7 @@ export type AuthenticatedUser = {
   email: string;
   display_name: string;
   role: string;
+  permissions?: string[];
 };
 
 type AppProps = {
@@ -57,7 +59,7 @@ type AppProps = {
   initialAdminRoles?: AdminRole[];
 };
 
-type LoginState = "idle" | "submitting" | "failed";
+type LoginState = "idle" | "submitting" | "failed" | "disabled" | "mfa" | "mfa-submitting";
 type WorkspaceView = "dashboard" | "settings" | "admin";
 type SaveState = "idle" | "saving" | "saved" | "failed";
 type ThemePreference = "dark" | "light";
@@ -107,6 +109,7 @@ type AdminUser = {
     name: string;
   };
   disabled: boolean;
+  mfa_enrolled: boolean;
   created_at: string;
 };
 
@@ -117,10 +120,14 @@ type AdminListResponse<T> = {
   total: number;
 };
 
+const emptyAdminUsers: AdminUser[] = [];
+const emptyAdminRoles: AdminRole[] = [];
+
 type NavItem = {
   label: string;
   icon: typeof Gauge;
   view?: WorkspaceView;
+  requiresAny?: string[];
 };
 
 const navItems: NavItem[] = [
@@ -129,7 +136,7 @@ const navItems: NavItem[] = [
   { label: "Findings", icon: Siren },
   { label: "Intelligence", icon: Database },
   { label: "Scanners", icon: Radar },
-  { label: "Administration", icon: UserCog, view: "admin" },
+  { label: "Administration", icon: UserCog, view: "admin", requiresAny: ["users:manage", "roles:manage"] },
   { label: "Settings", icon: Settings, view: "settings" },
 ];
 
@@ -220,18 +227,21 @@ const permissionOptions = [
 ];
 
 const builtInAdminEmail = "admin@example.test";
+const statusCodeAccepted = 202;
+const statusCodeForbidden = 403;
 
 export function App({
   initialUser = null,
   initialView = "dashboard",
   initialToast = null,
-  initialAdminUsers = [],
-  initialAdminRoles = [],
+  initialAdminUsers = emptyAdminUsers,
+  initialAdminRoles = emptyAdminRoles,
 }: AppProps) {
   const [user, setUser] = useState<AuthenticatedUser | null>(
     initialUser ?? getPreviewUser(getCurrentSearch(), import.meta.env.DEV),
   );
   const [loginState, setLoginState] = useState<LoginState>("idle");
+  const [mfaChallengeToken, setMfaChallengeToken] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<WorkspaceView>(initialView);
   const [themePreference, setThemePreference] = useState<ThemePreference>("dark");
   const [toast, setToast] = useState<ToastMessage | null>(initialToast);
@@ -267,6 +277,14 @@ export function App({
   const showToast = useCallback(({ message, tone = "success" }: NotifyPayload) => {
     setToast({ id: Date.now(), tone, message });
   }, []);
+
+  const canManageUsers = user ? hasPermission(user, "users:manage") : false;
+  const canManageRoles = user ? hasPermission(user, "roles:manage") : false;
+  const canViewAdministration = canManageUsers || canManageRoles;
+  const effectiveActiveView = activeView === "admin" && !canViewAdministration ? "dashboard" : activeView;
+  const visibleNavItems = navItems.filter(
+    (item) => !item.requiresAny || item.requiresAny.some((permission) => user && hasPermission(user, permission)),
+  );
 
   async function handleThemeToggle() {
     const nextTheme = themePreference === "dark" ? "light" : "dark";
@@ -317,13 +335,55 @@ export function App({
         }),
       });
       if (!response.ok) {
+        const errorPayload = (await response.json().catch(() => null)) as { detail?: string } | null;
+        if (response.status === statusCodeForbidden && errorPayload?.detail === "Account is disabled") {
+          setLoginState("disabled");
+          return;
+        }
         throw new Error("Invalid credentials");
+      }
+      if (response.status === statusCodeAccepted) {
+        const payload = (await response.json()) as { mfa_required: boolean; mfa_challenge_token: string };
+        if (payload.mfa_required && payload.mfa_challenge_token) {
+          setMfaChallengeToken(payload.mfa_challenge_token);
+          setLoginState("mfa");
+          return;
+        }
+        throw new Error("Missing MFA challenge");
       }
       const payload = (await response.json()) as { user: AuthenticatedUser };
       setUser(payload.user);
+      setMfaChallengeToken(null);
       setLoginState("idle");
     } catch {
       setLoginState("failed");
+    }
+  }
+
+  async function handleMfaLogin(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    setLoginState("mfa-submitting");
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/auth/mfa/verify`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mfa_challenge_token: mfaChallengeToken,
+          code: formData.get("code"),
+        }),
+      });
+      if (!response.ok) {
+        throw new Error("Invalid MFA code");
+      }
+      const payload = (await response.json()) as { user: AuthenticatedUser };
+      setUser(payload.user);
+      setMfaChallengeToken(null);
+      setLoginState("idle");
+    } catch {
+      setLoginState("mfa");
     }
   }
 
@@ -337,14 +397,14 @@ export function App({
   }
 
   if (!user) {
-    return <LoginScreen loginState={loginState} onSubmit={handleLogin} />;
+    return <LoginScreen loginState={loginState} onSubmit={handleLogin} onMfaSubmit={handleMfaLogin} />;
   }
 
-  const title = activeView === "settings" ? "Account Settings" : activeView === "admin" ? "Administration" : "Findings Dashboard";
+  const title = effectiveActiveView === "settings" ? "Account Settings" : effectiveActiveView === "admin" ? "Administration" : "Findings Dashboard";
   const subtitle =
-    activeView === "settings"
+    effectiveActiveView === "settings"
       ? "Manage identity, password, preferences, and authentication controls."
-      : activeView === "admin"
+      : effectiveActiveView === "admin"
         ? "Manage local users, role assignments, and custom RBAC roles."
         : "Scanner intake, scope status, and exploit metadata triage.";
 
@@ -359,12 +419,12 @@ export function App({
           </div>
         </div>
         <nav className="nav-list" aria-label="Primary navigation">
-          {navItems.map((item) => {
+          {visibleNavItems.map((item) => {
             const Icon = item.icon;
             const itemView: WorkspaceView = item.view ?? "dashboard";
             return (
               <button
-                className={item.view && activeView === itemView ? "active" : undefined}
+                className={item.view && effectiveActiveView === itemView ? "active" : undefined}
                 type="button"
                 onClick={() => setActiveView(itemView)}
                 key={item.label}
@@ -429,7 +489,7 @@ export function App({
           </div>
         </header>
 
-        {activeView === "settings" ? (
+        {effectiveActiveView === "settings" ? (
           <SettingsWorkspace
             user={user}
             onUserChange={setUser}
@@ -437,10 +497,12 @@ export function App({
             onPreferencesChange={handlePreferencesChange}
             onNotify={showToast}
           />
-        ) : activeView === "admin" ? (
+        ) : effectiveActiveView === "admin" ? (
           <AdminWorkspace
             initialUsers={initialAdminUsers}
             initialRoles={initialAdminRoles}
+            canManageUsers={canManageUsers}
+            canManageRoles={canManageRoles}
             onNotify={showToast}
           />
         ) : (
@@ -575,10 +637,14 @@ function DashboardWorkspace() {
 function AdminWorkspace({
   initialUsers,
   initialRoles,
+  canManageUsers,
+  canManageRoles,
   onNotify,
 }: {
   initialUsers: AdminUser[];
   initialRoles: AdminRole[];
+  canManageUsers: boolean;
+  canManageRoles: boolean;
   onNotify: NotifyHandler;
 }) {
   const [users, setUsers] = useState<AdminUser[]>(initialUsers);
@@ -593,8 +659,17 @@ function AdminWorkspace({
     async function loadAdminData() {
       try {
         const [usersResponse, rolesResponse] = await Promise.all([
-          fetchJson<AdminListResponse<AdminUser>>("/admin/users"),
-          fetchJson<AdminListResponse<AdminRole>>("/admin/roles"),
+          canManageUsers
+            ? fetchJson<AdminListResponse<AdminUser>>("/admin/users")
+            : Promise.resolve({ items: initialUsers, page: 1, page_size: initialUsers.length, total: initialUsers.length }),
+          canManageRoles || canManageUsers
+            ? fetchJson<AdminListResponse<AdminRole>>("/admin/roles").catch(() => ({
+                items: initialRoles,
+                page: 1,
+                page_size: initialRoles.length,
+                total: initialRoles.length,
+              }))
+            : Promise.resolve({ items: initialRoles, page: 1, page_size: initialRoles.length, total: initialRoles.length }),
         ]);
         if (!cancelled) {
           setUsers(usersResponse.items);
@@ -611,7 +686,7 @@ function AdminWorkspace({
     return () => {
       cancelled = true;
     };
-  }, [onNotify]);
+  }, [canManageRoles, canManageUsers, initialRoles, initialUsers, onNotify]);
 
   async function handleCreateUser(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -711,6 +786,19 @@ function AdminWorkspace({
     }
   }
 
+  async function handleClearUserMfa(user: AdminUser) {
+    setRowState((current) => ({ ...current, [user.id]: "saving" }));
+    try {
+      const nextUser = await fetchJson<AdminUser>(`/admin/users/${user.id}/mfa`, { method: "DELETE" });
+      setUsers((current) => sortUsers(current.map((item) => (item.id === user.id ? nextUser : item))));
+      onNotify({ message: "MFA configuration cleared." });
+    } catch {
+      onNotify({ message: "Unable to clear MFA configuration.", tone: "error" });
+    } finally {
+      setRowState((current) => ({ ...current, [user.id]: "idle" }));
+    }
+  }
+
   async function handleDeleteRole(role: AdminRole) {
     setRowState((current) => ({ ...current, [role.id]: "saving" }));
     try {
@@ -726,6 +814,7 @@ function AdminWorkspace({
 
   return (
     <section className="admin-grid" aria-label="Administration">
+      {canManageUsers ? (
       <section className="panel admin-users-panel">
         <div className="panel-header">
           <div>
@@ -742,6 +831,7 @@ function AdminWorkspace({
                 <th>Email</th>
                 <th>Role</th>
                 <th>Status</th>
+                <th>MFA</th>
                 <th>Actions</th>
               </tr>
             </thead>
@@ -793,6 +883,11 @@ function AdminWorkspace({
                       </span>
                     </td>
                     <td>
+                      <span className={`status-pill ${user.mfa_enrolled ? "active" : "disabled"}`}>
+                        {user.mfa_enrolled ? "Enabled" : "Disabled"}
+                      </span>
+                    </td>
+                    <td>
                       <div className="table-actions">
                         <button
                           className="secondary-action"
@@ -821,6 +916,15 @@ function AdminWorkspace({
                           <Trash2 size={15} aria-hidden="true" />
                           Delete
                         </button>
+                        <button
+                          className="secondary-action"
+                          type="button"
+                          onClick={() => handleClearUserMfa(user)}
+                          disabled={busy || !user.mfa_enrolled}
+                        >
+                          <KeyRound size={15} aria-hidden="true" />
+                          Clear MFA
+                        </button>
                       </div>
                     </td>
                   </tr>
@@ -830,7 +934,9 @@ function AdminWorkspace({
           </table>
         </div>
       </section>
+      ) : null}
 
+      {canManageUsers ? (
       <section className="panel settings-panel">
         <div className="panel-header">
           <div>
@@ -849,7 +955,7 @@ function AdminWorkspace({
             <input name="email" type="email" required />
           </label>
           <label>
-            Temporary password
+            Password
             <input name="password" type="password" minLength={12} autoComplete="new-password" required />
           </label>
           <label>
@@ -868,7 +974,9 @@ function AdminWorkspace({
           </button>
         </form>
       </section>
+      ) : null}
 
+      {canManageRoles ? (
       <section className="panel admin-roles-panel">
         <div className="panel-header">
           <div>
@@ -902,7 +1010,9 @@ function AdminWorkspace({
           ))}
         </div>
       </section>
+      ) : null}
 
+      {canManageRoles ? (
       <section className="panel settings-panel">
         <div className="panel-header">
           <div>
@@ -931,6 +1041,7 @@ function AdminWorkspace({
           </button>
         </form>
       </section>
+      ) : null}
     </section>
   );
 }
@@ -958,6 +1069,7 @@ function SettingsWorkspace({
   const [preferenceState, setPreferenceState] = useState<SaveState>("idle");
   const [mfaState, setMfaState] = useState<SaveState>("idle");
   const [mfaEnrollment, setMfaEnrollment] = useState<MfaEnrollment | null>(null);
+  const [mfaQrCode, setMfaQrCode] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -971,12 +1083,13 @@ function SettingsWorkspace({
         if (!cancelled) {
           setProfile(profileResponse);
           onPreferencesChange(preferencesResponse);
-          onUserChange({
+          onUserChange((currentUser) => ({
             id: profileResponse.id,
             email: profileResponse.email,
             display_name: profileResponse.display_name,
             role: profileResponse.role,
-          });
+            permissions: profileResponse.permissions ?? currentUser?.permissions,
+          }));
         }
       } catch {
         if (!cancelled) {
@@ -1006,12 +1119,13 @@ function SettingsWorkspace({
         }),
       });
       setProfile(nextProfile);
-      onUserChange({
+      onUserChange((currentUser) => ({
         id: nextProfile.id,
         email: nextProfile.email,
         display_name: nextProfile.display_name,
         role: nextProfile.role,
-      });
+        permissions: nextProfile.permissions ?? currentUser?.permissions,
+      }));
       setProfileState("idle");
       onNotify({ message: "Changes saved." });
       form.reset();
@@ -1080,6 +1194,7 @@ function SettingsWorkspace({
         method: "POST",
       });
       setMfaEnrollment(enrollment);
+      setMfaQrCode(await QRCode.toDataURL(enrollment.otpauth_uri, { margin: 1, width: 180 }));
       setMfaState("idle");
       onNotify({ message: "MFA setup started." });
     } catch {
@@ -1100,6 +1215,7 @@ function SettingsWorkspace({
       });
       setProfile(nextProfile);
       setMfaEnrollment(null);
+      setMfaQrCode(null);
       setMfaState("idle");
       onNotify({ message: "MFA enabled." });
       form.reset();
@@ -1121,6 +1237,7 @@ function SettingsWorkspace({
       });
       setProfile(nextProfile);
       setMfaEnrollment(null);
+      setMfaQrCode(null);
       setMfaState("idle");
       onNotify({ message: "MFA disabled." });
       form.reset();
@@ -1271,16 +1388,15 @@ function SettingsWorkspace({
             >
               Enable MFA
             </button>
+            <p className="form-note">Scan QR code with an authenticator app, then enter the verification code.</p>
             {mfaEnrollment ? (
               <div className="mfa-setup">
+                <strong>Scan QR code</strong>
+                {mfaQrCode ? <img className="mfa-qr-code" src={mfaQrCode} alt="MFA QR code" /> : null}
                 <dl className="settings-facts">
                   <div>
                     <dt>Setup key</dt>
                     <dd>{mfaEnrollment.secret}</dd>
-                  </div>
-                  <div>
-                    <dt>Authenticator URI</dt>
-                    <dd>{mfaEnrollment.otpauth_uri}</dd>
                   </div>
                 </dl>
               </div>
@@ -1334,6 +1450,10 @@ function sortRoles(roles: AdminRole[]) {
   return roles.sort((left, right) => left.name.localeCompare(right.name));
 }
 
+function hasPermission(user: AuthenticatedUser, permission: string) {
+  return user.permissions?.includes("*") || user.permissions?.includes(permission) || false;
+}
+
 async function fetchJson<T>(
   path: string,
   init: { method?: string; body?: string; headers?: Record<string, string> } = {},
@@ -1363,10 +1483,15 @@ function getCurrentSearch() {
 function LoginScreen({
   loginState,
   onSubmit,
+  onMfaSubmit,
 }: {
   loginState: LoginState;
   onSubmit: FormEventHandler<HTMLFormElement>;
+  onMfaSubmit: FormEventHandler<HTMLFormElement>;
 }) {
+  const isSubmitting = loginState === "submitting" || loginState === "mfa-submitting";
+  const needsMfa = loginState === "mfa" || loginState === "mfa-submitting";
+
   return (
     <main className="login-shell">
       <section className="login-panel">
@@ -1381,6 +1506,7 @@ function LoginScreen({
           <h1>Sign in to EVE</h1>
           <p>Use your local account to review authorized scanner findings.</p>
         </div>
+        {!needsMfa ? (
         <form className="login-form" onSubmit={onSubmit}>
           <label>
             Email address
@@ -1396,11 +1522,29 @@ function LoginScreen({
               Invalid email or password.
             </p>
           ) : null}
-          <button className="primary-action" type="submit" disabled={loginState === "submitting"}>
+          {loginState === "disabled" ? (
+            <p className="form-error">
+              <AlertTriangle size={16} aria-hidden="true" />
+              This account is disabled.
+            </p>
+          ) : null}
+          <button className="primary-action" type="submit" disabled={isSubmitting}>
             <UserRound size={18} aria-hidden="true" />
-            {loginState === "submitting" ? "Signing in" : "Sign In"}
+            {isSubmitting ? "Signing in" : "Sign In"}
           </button>
         </form>
+        ) : (
+        <form className="login-form" onSubmit={onMfaSubmit}>
+          <label>
+            Verification code
+            <input name="code" inputMode="numeric" pattern="[0-9]{6}" maxLength={6} required autoFocus />
+          </label>
+          <button className="primary-action" type="submit" disabled={isSubmitting}>
+            <ShieldCheck size={18} aria-hidden="true" />
+            {isSubmitting ? "Verifying" : "Verify MFA"}
+          </button>
+        </form>
+        )}
       </section>
       <section className="login-preview" aria-label="EVE platform preview">
         <div className="preview-window">

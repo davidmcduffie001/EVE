@@ -8,7 +8,8 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
-from pydantic import BaseModel, field_validator
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
@@ -21,7 +22,8 @@ from app.services.auth.dependencies import (
     create_current_user_dependency,
     fetch_user_with_role,
 )
-from app.services.auth.security import PasswordHasher, TokenSigner
+from app.services.auth.mfa import verify_totp_code
+from app.services.auth.security import InvalidTokenError, PasswordHasher, TokenSigner
 from app.services.auth.sessions import RefreshSessionService
 
 
@@ -45,6 +47,7 @@ class UserResponse(BaseModel):
     email: str
     display_name: str
     role: str
+    permissions: list[str]
 
 
 class AuthResponse(BaseModel):
@@ -52,6 +55,13 @@ class AuthResponse(BaseModel):
 
     user: UserResponse
     access_expires_at: datetime
+
+
+class MfaVerifyRequest(BaseModel):
+    """MFA login verification request body."""
+
+    mfa_challenge_token: str
+    code: str = Field(min_length=6, max_length=16)
 
 
 def create_auth_router(
@@ -67,13 +77,13 @@ def create_auth_router(
     current_user = create_current_user_dependency(settings, sessionmaker)
     current_user_dependency = Depends(current_user)
 
-    @router.post("/login", response_model=AuthResponse)
+    @router.post("/login", response_model=None)
     async def login(
         request: LoginRequest,
         http_request: Request,
         response: Response,
         session: AsyncSession = db_session,
-    ) -> AuthResponse:
+    ) -> AuthResponse | JSONResponse:
         """Authenticate local credentials and set browser session cookies."""
         user_with_role = await fetch_user_with_role(session, email=request.email)
         if user_with_role is None:
@@ -94,7 +104,7 @@ def create_auth_router(
                 reason="disabled_user",
                 user_id=user.id,
             )
-            raise _invalid_credentials()
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
         if not password_hasher.verify_password(request.password, user.password_hash):
             await _record_login_failure(
                 session=session,
@@ -105,6 +115,73 @@ def create_auth_router(
             )
             raise _invalid_credentials()
 
+        if user.mfa_enrolled and user.mfa_secret is not None:
+            await AuditLogService(session).record(
+                user_id=user.id,
+                action="auth.mfa_required",
+                resource_type="session",
+                outcome="success",
+                source_ip=client_host(http_request),
+                metadata={"email": user.email},
+            )
+            await session.commit()
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content={
+                    "mfa_required": True,
+                    "mfa_challenge_token": token_signer.create_mfa_challenge_token(user_id=user.id),
+                },
+            )
+
+        return await _issue_browser_session(
+            response=response,
+            http_request=http_request,
+            session=session,
+            settings=settings,
+            token_signer=token_signer,
+            user=user,
+            role=role,
+        )
+
+    @router.post("/mfa/verify", response_model=AuthResponse)
+    async def verify_mfa_login(
+        payload: MfaVerifyRequest,
+        http_request: Request,
+        response: Response,
+        session: AsyncSession = db_session,
+    ) -> AuthResponse:
+        """Verify a pending MFA login challenge and issue browser session cookies."""
+        try:
+            claims = token_signer.verify_mfa_challenge_token(payload.mfa_challenge_token)
+            user_id = UUID(claims.subject)
+        except (InvalidTokenError, ValueError):
+            raise _invalid_mfa_code() from None
+
+        user_with_role = await fetch_user_with_role(session, user_id=user_id)
+        if user_with_role is None:
+            raise _invalid_mfa_code()
+        user, role = user_with_role
+        if user.disabled_at is not None or not user.mfa_enrolled or user.mfa_secret is None:
+            raise _invalid_mfa_code()
+        if not verify_totp_code(user.mfa_secret, payload.code):
+            await AuditLogService(session).record(
+                user_id=user.id,
+                action="auth.mfa_verify",
+                resource_type="session",
+                outcome="failure",
+                source_ip=client_host(http_request),
+                metadata={"reason": "invalid_code"},
+            )
+            await session.commit()
+            raise _invalid_mfa_code()
+
+        await AuditLogService(session).record(
+            user_id=user.id,
+            action="auth.mfa_verify",
+            resource_type="session",
+            outcome="success",
+            source_ip=client_host(http_request),
+        )
         return await _issue_browser_session(
             response=response,
             http_request=http_request,
@@ -278,11 +355,13 @@ async def _record_login_failure(
 
 def _serialize_user(user: User | AuthenticatedUser, role: Role | None = None) -> UserResponse:
     role_name = role.name if role is not None else user.role_name
+    permissions = role.permissions if role is not None else sorted(user.permissions)
     return UserResponse(
         id=user.id,
         email=user.email,
         display_name=user.display_name,
         role=role_name,
+        permissions=permissions,
     )
 
 
@@ -322,6 +401,13 @@ def _invalid_credentials() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid email or password",
+    )
+
+
+def _invalid_mfa_code() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid MFA code",
     )
 
 

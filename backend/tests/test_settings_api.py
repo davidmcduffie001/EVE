@@ -228,6 +228,7 @@ def test_mfa_enrollment_verifies_totp_code(
     stored_user = anyio.run(fetch_user)
     assert enrollment.status_code == 201
     assert enrollment.json()["otpauth_uri"].startswith("otpauth://totp/EVE%3A")
+    assert "algorithm=SHA256" in enrollment.json()["otpauth_uri"]
     assert verify.status_code == 200
     assert verify.json()["mfa_enrolled"] is True
     assert profile.json()["mfa_enrolled"] is True

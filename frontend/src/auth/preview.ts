@@ -5,6 +5,7 @@ const previewDashboardUser: AuthenticatedUser = {
   email: "admin@example.test",
   display_name: "Admin User",
   role: "Admin",
+  permissions: ["*"],
 };
 
 export function getPreviewUser(search: string, isDevelopment: boolean) {

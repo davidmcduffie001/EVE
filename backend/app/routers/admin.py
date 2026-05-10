@@ -28,6 +28,7 @@ from app.services.audit import AuditLogService
 from app.services.auth.dependencies import (
     AuthenticatedUser,
     client_host,
+    create_current_user_dependency,
     create_permission_dependency,
 )
 from app.services.auth.permissions import PERMISSIONS
@@ -110,6 +111,7 @@ class UserResponse(BaseModel):
     display_name: str
     role: UserRoleResponse
     disabled: bool
+    mfa_enrolled: bool
     created_at: datetime
 
 
@@ -179,9 +181,11 @@ def create_admin_router(
     can_read_audit = create_permission_dependency(settings, sessionmaker, "audit:read")
     can_manage_users = create_permission_dependency(settings, sessionmaker, "users:manage")
     can_manage_roles = create_permission_dependency(settings, sessionmaker, "roles:manage")
+    current_user = create_current_user_dependency(settings, sessionmaker)
     audit_reader = Depends(can_read_audit)
     user_manager = Depends(can_manage_users)
     role_manager = Depends(can_manage_roles)
+    administration_reader = Depends(current_user)
     db_session = Depends(db_dependency)
     password_hasher = PasswordHasher()
 
@@ -375,14 +379,53 @@ def create_admin_router(
         response.status_code = status.HTTP_204_NO_CONTENT
         return response
 
+    @router.delete("/users/{user_id}/mfa", response_model=UserResponse)
+    async def clear_user_mfa(
+        user_id: UUID,
+        http_request: Request,
+        csrf_cookie: str | None = Cookie(default=None, alias=settings.csrf_cookie_name),
+        csrf_header: str | None = Header(default=None, alias=settings.csrf_header_name),
+        actor: AuthenticatedUser = user_manager,
+        session: AsyncSession = db_session,
+    ) -> UserResponse:
+        """Clear MFA configuration for a local user. Requires `users:manage`."""
+        _validate_csrf(csrf_cookie=csrf_cookie, csrf_header=csrf_header)
+        user = await session.get(User, user_id)
+        if user is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+        if actor.id == user.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Users cannot clear their own MFA configuration",
+            )
+        user.mfa_enrolled = False
+        user.mfa_secret = None
+        role = await session.get(Role, user.role_id)
+        if role is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Role does not exist",
+            )
+        await _record_admin_event(
+            session=session,
+            http_request=http_request,
+            actor=actor,
+            action="admin.user_mfa_clear",
+            resource_id=str(user.id),
+            metadata={"email": user.email},
+        )
+        await session.commit()
+        return _serialize_user(user, role)
+
     @router.get("/roles", response_model=RoleListResponse)
     async def list_roles(
         page: int = Query(default=1, ge=1),
         page_size: int = Query(default=50, ge=1, le=200),
-        _user: AuthenticatedUser = role_manager,
+        actor: AuthenticatedUser = administration_reader,
         session: AsyncSession = db_session,
     ) -> RoleListResponse:
-        """List roles. Requires `roles:manage`."""
+        """List roles. Requires `roles:manage` or `users:manage`."""
+        _require_any_permission(actor, ("roles:manage", "users:manage"))
         total = await session.scalar(select(func.count()).select_from(Role))
         rows = (
             await session.scalars(
@@ -503,6 +546,7 @@ def _serialize_user(user: User, role: Role) -> UserResponse:
         display_name=user.display_name,
         role=UserRoleResponse(id=role.id, name=role.name),
         disabled=user.disabled_at is not None,
+        mfa_enrolled=user.mfa_enrolled,
         created_at=user.created_at,
     )
 
@@ -514,6 +558,12 @@ def _validate_permissions(permissions: list[str]) -> None:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Unknown permissions: {', '.join(invalid_permissions)}",
         )
+
+
+def _require_any_permission(user: AuthenticatedUser, permissions: tuple[str, ...]) -> None:
+    if "*" in user.permissions or any(permission in user.permissions for permission in permissions):
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
 
 
 async def _record_admin_event(
