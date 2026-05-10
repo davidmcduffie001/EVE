@@ -274,6 +274,7 @@ describe("App", () => {
     expect(markup).toContain("OpenID Connect");
     expect(markup).toContain("http://localhost:8001/auth/sso/oidc/callback");
     expect(markup).toContain("Save SSO Settings");
+    expect(markup).toContain("Validate OIDC Configuration");
   });
 
   it("renders the audit log beneath administration controls for audit readers", () => {

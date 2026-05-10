@@ -158,6 +158,19 @@ type SsoStatus = {
   login_url: string | null;
 };
 
+type SsoValidationCheck = {
+  name: string;
+  passed: boolean;
+  message: string;
+};
+
+type SsoValidationResult = {
+  valid: boolean;
+  provider: string;
+  redirect_uri: string;
+  checks: SsoValidationCheck[];
+};
+
 const emptyAdminUsers: AdminUser[] = [];
 const emptyAdminRoles: AdminRole[] = [];
 const emptyAuditLogEntries: AuditLogEntry[] = [];
@@ -752,9 +765,11 @@ function AdminWorkspace({
   const [roles, setRoles] = useState<AdminRole[]>(initialRoles);
   const [auditLogEntries, setAuditLogEntries] = useState<AuditLogEntry[]>(initialAuditLogEntries);
   const [ssoSettings, setSsoSettings] = useState<SsoSettings>(initialSsoSettings);
+  const [ssoValidationResult, setSsoValidationResult] = useState<SsoValidationResult | null>(null);
   const [userState, setUserState] = useState<SaveState>("idle");
   const [roleState, setRoleState] = useState<SaveState>("idle");
   const [ssoState, setSsoState] = useState<SaveState>("idle");
+  const [ssoValidationState, setSsoValidationState] = useState<SaveState>("idle");
   const [rowState, setRowState] = useState<Record<string, SaveState>>({});
   const hasAdministrationAccess = canManageUsers || canManageRoles || canReadAudit;
 
@@ -915,12 +930,31 @@ function AdminWorkspace({
         }),
       });
       setSsoSettings(nextSettings);
+      setSsoValidationResult(null);
       setSsoState("idle");
       onNotify({ message: "SSO settings saved." });
       form.reset();
     } catch {
       setSsoState("idle");
       onNotify({ message: "Unable to save SSO settings.", tone: "error" });
+    }
+  }
+
+  async function handleValidateSso() {
+    setSsoValidationState("saving");
+    try {
+      const result = await fetchJson<SsoValidationResult>("/admin/sso/validate", {
+        method: "POST",
+      });
+      setSsoValidationResult(result);
+      setSsoValidationState(result.valid ? "saved" : "failed");
+      onNotify({
+        message: result.valid ? "SSO configuration validated." : "SSO validation failed.",
+        tone: result.valid ? "success" : "error",
+      });
+    } catch {
+      setSsoValidationState("failed");
+      onNotify({ message: "Unable to validate SSO settings.", tone: "error" });
     }
   }
 
@@ -1302,6 +1336,35 @@ function AdminWorkspace({
             <Save size={17} aria-hidden="true" />
             Save SSO Settings
           </button>
+          <button
+            className="secondary-action"
+            type="button"
+            disabled={ssoValidationState === "saving"}
+            onClick={handleValidateSso}
+          >
+            <ShieldCheck size={17} aria-hidden="true" />
+            Validate OIDC Configuration
+          </button>
+          {ssoValidationResult ? (
+            <div className={`sso-validation-results ${ssoValidationResult.valid ? "valid" : "invalid"}`}>
+              <strong>{ssoValidationResult.valid ? "Validation passed" : "Validation failed"}</strong>
+              <ul>
+                {ssoValidationResult.checks.map((check) => (
+                  <li className={check.passed ? "passed" : "failed"} key={`${check.name}-${check.message}`}>
+                    {check.passed ? (
+                      <CheckCircle2 size={15} aria-hidden="true" />
+                    ) : (
+                      <AlertTriangle size={15} aria-hidden="true" />
+                    )}
+                    <span>
+                      <b>{check.name}</b>
+                      {check.message}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
         </form>
       </section>
       ) : null}
