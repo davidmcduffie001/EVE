@@ -7,6 +7,7 @@ import {
   Gauge,
   KeyRound,
   LogOut,
+  Moon,
   Radar,
   Save,
   Search,
@@ -15,6 +16,7 @@ import {
   ShieldEllipsis,
   SlidersHorizontal,
   Siren,
+  Sun,
   Target,
   UserCog,
   UserRound,
@@ -50,6 +52,7 @@ type AppProps = {
 type LoginState = "idle" | "submitting" | "failed";
 type WorkspaceView = "dashboard" | "settings";
 type SaveState = "idle" | "saving" | "saved" | "failed";
+type ThemePreference = "dark" | "light";
 
 type UserProfile = AuthenticatedUser & {
   mfa_enrolled: boolean;
@@ -57,7 +60,7 @@ type UserProfile = AuthenticatedUser & {
 };
 
 type UserPreferences = {
-  theme_preference: "dark" | "light";
+  theme_preference: ThemePreference;
   timezone: string;
   date_format: string;
   default_landing_page: string;
@@ -138,6 +141,48 @@ export function App({ initialUser = null, initialView = "dashboard" }: AppProps)
   );
   const [loginState, setLoginState] = useState<LoginState>("idle");
   const [activeView, setActiveView] = useState<WorkspaceView>(initialView);
+  const [themePreference, setThemePreference] = useState<ThemePreference>("dark");
+  const [preferences, setPreferences] = useState<UserPreferences>({
+    theme_preference: "dark",
+    timezone: "UTC",
+    date_format: "YYYY-MM-DD",
+    default_landing_page: "dashboard",
+    table_state: {},
+  });
+
+  const handlePreferencesChange = useMemo(
+    () => (nextPreferences: UserPreferences) => {
+      setPreferences(nextPreferences);
+      setThemePreference(nextPreferences.theme_preference);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    if (typeof document !== "undefined") {
+      document.documentElement.dataset.theme = themePreference;
+    }
+  }, [themePreference]);
+
+  async function handleThemeToggle() {
+    const nextTheme = themePreference === "dark" ? "light" : "dark";
+    const previousTheme = themePreference;
+    setThemePreference(nextTheme);
+
+    try {
+      const nextPreferences = await fetchJson<UserPreferences>("/settings/preferences", {
+        method: "PUT",
+        body: JSON.stringify({
+          ...preferences,
+          theme_preference: nextTheme,
+        }),
+      });
+      setPreferences(nextPreferences);
+      setThemePreference(nextPreferences.theme_preference);
+    } catch {
+      setThemePreference(previousTheme);
+    }
+  }
 
   const initials = useMemo(() => {
     if (!user) {
@@ -191,7 +236,7 @@ export function App({ initialUser = null, initialView = "dashboard" }: AppProps)
   }
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell theme-${themePreference}`}>
       <aside className="sidebar">
         <div className="brand">
           <img src={eveLogo} alt="EVE logo" className="brand-logo" />
@@ -247,6 +292,17 @@ export function App({ initialUser = null, initialView = "dashboard" }: AppProps)
               <Bell size={18} aria-hidden="true" />
             </button>
             <button
+              className="theme-toggle"
+              type="button"
+              aria-label={themePreference === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+              aria-pressed={themePreference === "light"}
+              onClick={handleThemeToggle}
+            >
+              <Sun size={16} aria-hidden="true" />
+              <span />
+              <Moon size={16} aria-hidden="true" />
+            </button>
+            <button
               className="user-chip"
               type="button"
               aria-label="Open account settings"
@@ -265,7 +321,12 @@ export function App({ initialUser = null, initialView = "dashboard" }: AppProps)
         </header>
 
         {activeView === "settings" ? (
-          <SettingsWorkspace user={user} onUserChange={setUser} />
+          <SettingsWorkspace
+            user={user}
+            onUserChange={setUser}
+            preferences={preferences}
+            onPreferencesChange={handlePreferencesChange}
+          />
         ) : (
           <DashboardWorkspace />
         )}
@@ -397,21 +458,18 @@ function DashboardWorkspace() {
 function SettingsWorkspace({
   user,
   onUserChange,
+  preferences,
+  onPreferencesChange,
 }: {
   user: AuthenticatedUser;
   onUserChange: Dispatch<SetStateAction<AuthenticatedUser | null>>;
+  preferences: UserPreferences;
+  onPreferencesChange: Dispatch<UserPreferences>;
 }) {
   const [profile, setProfile] = useState<UserProfile>({
     ...user,
     mfa_enrolled: false,
     created_at: "",
-  });
-  const [preferences, setPreferences] = useState<UserPreferences>({
-    theme_preference: "dark",
-    timezone: "UTC",
-    date_format: "YYYY-MM-DD",
-    default_landing_page: "dashboard",
-    table_state: {},
   });
   const [profileState, setProfileState] = useState<SaveState>("idle");
   const [passwordState, setPasswordState] = useState<SaveState>("idle");
@@ -428,7 +486,7 @@ function SettingsWorkspace({
         ]);
         if (!cancelled) {
           setProfile(profileResponse);
-          setPreferences(preferencesResponse);
+          onPreferencesChange(preferencesResponse);
           onUserChange({
             id: profileResponse.id,
             email: profileResponse.email,
@@ -447,7 +505,7 @@ function SettingsWorkspace({
     return () => {
       cancelled = true;
     };
-  }, [onUserChange]);
+  }, [onPreferencesChange, onUserChange]);
 
   async function handleProfileSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -503,14 +561,14 @@ function SettingsWorkspace({
       const nextPreferences = await fetchJson<UserPreferences>("/settings/preferences", {
         method: "PUT",
         body: JSON.stringify({
-          theme_preference: formData.get("theme_preference"),
+          theme_preference: preferences.theme_preference,
           timezone: formData.get("timezone"),
           date_format: formData.get("date_format"),
           default_landing_page: formData.get("default_landing_page"),
           table_state: preferences.table_state,
         }),
       });
-      setPreferences(nextPreferences);
+      onPreferencesChange(nextPreferences);
       setPreferenceState("saved");
     } catch {
       setPreferenceState("failed");
@@ -589,15 +647,8 @@ function SettingsWorkspace({
         <form
           className="settings-form settings-form-inline"
           onSubmit={handlePreferencesSubmit}
-          key={`${preferences.theme_preference}-${preferences.timezone}-${preferences.default_landing_page}`}
+          key={`${preferences.timezone}-${preferences.default_landing_page}`}
         >
-          <label>
-            Theme
-            <select name="theme_preference" defaultValue={preferences.theme_preference}>
-              <option value="dark">Dark</option>
-              <option value="light">Light</option>
-            </select>
-          </label>
           <label>
             Timezone
             <input name="timezone" defaultValue={preferences.timezone} required />

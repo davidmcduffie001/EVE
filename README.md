@@ -42,7 +42,7 @@ Phase 1 does not include exploit execution, execution credentials, or execution-
 - The administrative audit-log API exposes paginated tamper-evident audit records to users with `audit:read`.
 - Authentication success/failure, refresh failures, logout, and permission denials are written to the audit log with redacted metadata and hash-chain integrity fields.
 - User settings APIs now support profile lookup/update, email changes with password confirmation, password changes with other-session revocation, and display/table preference persistence.
-- The web UI includes an account settings workspace for profile, password, preferences, and MFA status controls backed by the settings APIs.
+- The web UI includes an account settings workspace for profile, password, preferences, and MFA status controls backed by the settings APIs, plus a topbar dark/light theme toggle persisted through user preferences.
 
 ## Local Development
 

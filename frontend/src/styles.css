@@ -236,6 +236,46 @@ button {
   color: #c8d4d7;
 }
 
+.theme-toggle {
+  position: relative;
+  display: inline-grid;
+  grid-template-columns: 16px 18px 16px;
+  align-items: center;
+  gap: 6px;
+  width: 82px;
+  height: 40px;
+  border: 1px solid #283235;
+  border-radius: 8px;
+  background: #12191b;
+  color: #c8d4d7;
+  cursor: pointer;
+  padding: 0 10px;
+}
+
+.theme-toggle span {
+  position: absolute;
+  top: 7px;
+  left: 8px;
+  width: 26px;
+  height: 24px;
+  border-radius: 7px;
+  background: #253233;
+  transform: translateX(0);
+  transition:
+    background 150ms ease,
+    transform 150ms ease;
+}
+
+.theme-toggle[aria-pressed="true"] span {
+  background: #dce8ea;
+  transform: translateX(38px);
+}
+
+.theme-toggle svg {
+  position: relative;
+  z-index: 1;
+}
+
 .user-chip {
   display: flex;
   align-items: center;
@@ -642,6 +682,85 @@ tbody tr:hover {
   color: #dce6e8;
   font-size: 13px;
   overflow-wrap: anywhere;
+}
+
+.theme-light {
+  color: #192326;
+}
+
+.theme-light,
+.theme-light .workspace {
+  background: #f4f7f7;
+}
+
+.theme-light .sidebar,
+.theme-light .panel,
+.theme-light .metric-card,
+.theme-light .user-chip,
+.theme-light .icon-button,
+.theme-light .theme-toggle,
+.theme-light .search-field,
+.theme-light .scope-panel,
+.theme-light .preview-window,
+.theme-light .login-panel {
+  border-color: #cedadd;
+  background: #ffffff;
+}
+
+.theme-light .sidebar {
+  background: #edf3f3;
+}
+
+.theme-light .brand span,
+.theme-light .login-brand span,
+.theme-light .topbar p,
+.theme-light .panel-header p,
+.theme-light .metric-card small,
+.theme-light .user-chip small,
+.theme-light .scope-panel span {
+  color: #5e7076;
+}
+
+.theme-light .nav-list button {
+  color: #314146;
+}
+
+.theme-light .nav-list button.active,
+.theme-light .nav-list button:hover {
+  background: #dbe7e8;
+  color: #0f1719;
+}
+
+.theme-light .scope-icon,
+.theme-light .user-chip > span {
+  background: #d8eeee;
+  color: #13766e;
+}
+
+.theme-light .search-field input,
+.theme-light .settings-form input,
+.theme-light .settings-form select {
+  background: #f8fbfb;
+  color: #172124;
+}
+
+.theme-light .settings-facts div,
+.theme-light .connector-steps li,
+.theme-light .activity-list li {
+  background: #eef5f5;
+  color: #1c2a2e;
+}
+
+.theme-light th,
+.theme-light .settings-facts dt,
+.theme-light .metric-card span,
+.theme-light .settings-form label {
+  color: #52666d;
+}
+
+.theme-light td,
+.theme-light .settings-facts dd {
+  color: #172124;
 }
 
 .form-error {
