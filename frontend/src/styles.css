@@ -302,6 +302,7 @@ button {
 }
 
 .user-chip strong {
+  color: #f7fbfc;
   font-size: 13px;
   white-space: nowrap;
 }
@@ -653,6 +654,32 @@ tbody tr:hover {
   color: #75dcc8;
 }
 
+.toast {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 50;
+  max-width: min(360px, calc(100vw - 32px));
+  border: 1px solid #34524e;
+  border-radius: 8px;
+  background: #13201d;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.34);
+  color: #effffb;
+  font-size: 13px;
+  font-weight: 800;
+  padding: 13px 16px;
+}
+
+.toast.success {
+  border-color: #65c5b8;
+}
+
+.toast.error {
+  border-color: #ee7c6f;
+  background: #271a1a;
+  color: #ffd2cc;
+}
+
 .settings-facts {
   display: grid;
   gap: 10px;
@@ -742,6 +769,10 @@ tbody tr:hover {
   color: #294147;
 }
 
+.theme-light .user-chip strong {
+  color: #0f1719;
+}
+
 .theme-light .search-field input,
 .theme-light .settings-form input,
 .theme-light .settings-form select {
@@ -782,6 +813,17 @@ tbody tr:hover {
 
 .theme-light .bar-track {
   background: #dde9eb;
+}
+
+.theme-light .toast {
+  background: #ffffff;
+  box-shadow: 0 18px 50px rgba(20, 35, 38, 0.18);
+  color: #132225;
+}
+
+.theme-light .toast.error {
+  background: #fff4f2;
+  color: #8f2a21;
 }
 
 .theme-light th,

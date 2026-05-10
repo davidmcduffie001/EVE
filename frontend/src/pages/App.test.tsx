@@ -66,7 +66,26 @@ describe("App", () => {
     );
 
     expect(markup).toContain("Switch to light theme");
+    expect(markup.indexOf("lucide-moon")).toBeLessThan(markup.indexOf("lucide-sun"));
     expect(markup).not.toContain(">Theme</label>");
+  });
+
+  it("renders saved changes in a toast notification", () => {
+    const markup = renderToString(
+      <App
+        initialToast={{ id: 1, tone: "success", message: "Changes saved." }}
+        initialUser={{
+          id: "user-1",
+          email: "admin@example.test",
+          display_name: "Admin User",
+          role: "Admin",
+        }}
+      />,
+    );
+
+    expect(markup).toContain('class="toast success"');
+    expect(markup).toContain('role="status"');
+    expect(markup).toContain("Changes saved.");
   });
 
   it("renders timezone and date format dropdowns without landing page settings", () => {

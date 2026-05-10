@@ -47,12 +47,25 @@ export type AuthenticatedUser = {
 type AppProps = {
   initialUser?: AuthenticatedUser | null;
   initialView?: WorkspaceView;
+  initialToast?: ToastMessage | null;
 };
 
 type LoginState = "idle" | "submitting" | "failed";
 type WorkspaceView = "dashboard" | "settings";
 type SaveState = "idle" | "saving" | "saved" | "failed";
 type ThemePreference = "dark" | "light";
+type ToastTone = "success" | "error";
+
+type ToastMessage = {
+  id: number;
+  tone: ToastTone;
+  message: string;
+};
+type NotifyPayload = {
+  message: string;
+  tone?: ToastTone;
+};
+type NotifyHandler = Dispatch<NotifyPayload>;
 
 type UserProfile = AuthenticatedUser & {
   mfa_enrolled: boolean;
@@ -152,13 +165,14 @@ const dateFormatOptions = [
   { value: "MMM D, YYYY", label: "MMM D, YYYY" },
 ];
 
-export function App({ initialUser = null, initialView = "dashboard" }: AppProps) {
+export function App({ initialUser = null, initialView = "dashboard", initialToast = null }: AppProps) {
   const [user, setUser] = useState<AuthenticatedUser | null>(
     initialUser ?? getPreviewUser(getCurrentSearch(), import.meta.env.DEV),
   );
   const [loginState, setLoginState] = useState<LoginState>("idle");
   const [activeView, setActiveView] = useState<WorkspaceView>(initialView);
   const [themePreference, setThemePreference] = useState<ThemePreference>("dark");
+  const [toast, setToast] = useState<ToastMessage | null>(initialToast);
   const [preferences, setPreferences] = useState<UserPreferences>({
     theme_preference: "dark",
     timezone: "UTC",
@@ -179,6 +193,18 @@ export function App({ initialUser = null, initialView = "dashboard" }: AppProps)
       document.documentElement.dataset.theme = themePreference;
     }
   }, [themePreference]);
+
+  useEffect(() => {
+    if (!toast || typeof window === "undefined") {
+      return undefined;
+    }
+    const timeout = window.setTimeout(() => setToast(null), 2600);
+    return () => window.clearTimeout(timeout);
+  }, [toast]);
+
+  function showToast({ message, tone = "success" }: NotifyPayload) {
+    setToast({ id: Date.now(), tone, message });
+  }
 
   async function handleThemeToggle() {
     const nextTheme = themePreference === "dark" ? "light" : "dark";
@@ -315,9 +341,9 @@ export function App({ initialUser = null, initialView = "dashboard" }: AppProps)
               aria-pressed={themePreference === "light"}
               onClick={handleThemeToggle}
             >
-              <Sun size={16} aria-hidden="true" />
-              <span />
               <Moon size={16} aria-hidden="true" />
+              <span />
+              <Sun size={16} aria-hidden="true" />
             </button>
             <button
               className="user-chip"
@@ -343,10 +369,12 @@ export function App({ initialUser = null, initialView = "dashboard" }: AppProps)
             onUserChange={setUser}
             preferences={preferences}
             onPreferencesChange={handlePreferencesChange}
+            onNotify={showToast}
           />
         ) : (
           <DashboardWorkspace />
         )}
+        {toast ? <ToastNotification toast={toast} /> : null}
       </section>
     </main>
   );
@@ -477,11 +505,13 @@ function SettingsWorkspace({
   onUserChange,
   preferences,
   onPreferencesChange,
+  onNotify,
 }: {
   user: AuthenticatedUser;
   onUserChange: Dispatch<SetStateAction<AuthenticatedUser | null>>;
   preferences: UserPreferences;
   onPreferencesChange: Dispatch<UserPreferences>;
+  onNotify: NotifyHandler;
 }) {
   const [profile, setProfile] = useState<UserProfile>({
     ...user,
@@ -544,10 +574,12 @@ function SettingsWorkspace({
         display_name: nextProfile.display_name,
         role: nextProfile.role,
       });
-      setProfileState("saved");
+      setProfileState("idle");
+      onNotify({ message: "Changes saved." });
       event.currentTarget.reset();
     } catch {
       setProfileState("failed");
+      onNotify({ message: "Unable to save changes.", tone: "error" });
     }
   }
 
@@ -563,10 +595,12 @@ function SettingsWorkspace({
           new_password: formData.get("new_password"),
         }),
       });
-      setPasswordState("saved");
+      setPasswordState("idle");
+      onNotify({ message: "Changes saved." });
       event.currentTarget.reset();
     } catch {
       setPasswordState("failed");
+      onNotify({ message: "Unable to save changes.", tone: "error" });
     }
   }
 
@@ -586,9 +620,11 @@ function SettingsWorkspace({
         }),
       });
       onPreferencesChange(nextPreferences);
-      setPreferenceState("saved");
+      setPreferenceState("idle");
+      onNotify({ message: "Changes saved." });
     } catch {
       setPreferenceState("failed");
+      onNotify({ message: "Unable to save changes.", tone: "error" });
     }
   }
 
@@ -732,9 +768,17 @@ function FormStatus({ state }: { state: SaveState }) {
     return <p className="form-note">Saving changes</p>;
   }
   if (state === "saved") {
-    return <p className="form-success">Changes saved.</p>;
+    return null;
   }
   return <p className="form-error">Unable to save changes.</p>;
+}
+
+function ToastNotification({ toast }: { toast: ToastMessage }) {
+  return (
+    <div className={`toast ${toast.tone}`} role={toast.tone === "success" ? "status" : "alert"}>
+      {toast.message}
+    </div>
+  );
 }
 
 async function fetchJson<T>(
