@@ -5,9 +5,12 @@ from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
 import anyio
+import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 from httpx import Response as HttpxResponse
+from jwt.algorithms import RSAAlgorithm
 from sqlalchemy import select
 
 from app.core.config import Settings
@@ -21,6 +24,33 @@ from app.services.auth.sessions import RefreshSessionService
 
 def _csrf_headers(client: TestClient) -> dict[str, str]:
     return {"x-csrf-token": client.cookies["eve_csrf_token"]}
+
+
+def _signed_oidc_token(
+    *,
+    issuer: str = "https://idp.example.test",
+    audience: str = "eve-client",
+    nonce: str = "expected-nonce",
+    key_id: str = "test-key",
+) -> tuple[str, dict[str, object]]:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    public_jwk = RSAAlgorithm.to_jwk(private_key.public_key(), as_dict=True)
+    public_jwk["kid"] = key_id
+    now = datetime.now(UTC)
+    token = jwt.encode(
+        {
+            "sub": "user-123",
+            "iss": issuer,
+            "aud": audience,
+            "nonce": nonce,
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(minutes=5)).timestamp()),
+        },
+        private_key,
+        algorithm="RS256",
+        headers={"kid": key_id},
+    )
+    return token, public_jwk
 
 
 @pytest.fixture
@@ -219,6 +249,8 @@ async def test_oidc_callback_exchanges_code_and_auto_provisions_user(monkeypatch
         )
         await session.commit()
 
+    id_token, public_jwk = _signed_oidc_token()
+
     class FakeAsyncClient:
         def __init__(self, *args, **kwargs) -> None:
             pass
@@ -235,10 +267,31 @@ async def test_oidc_callback_exchanges_code_and_auto_provisions_user(monkeypatch
             assert data["code"] == "auth-code"
             assert data["client_id"] == "eve-client"
             assert data["redirect_uri"] == "http://localhost:8001/auth/sso/oidc/callback"
-            return HttpxResponse(200, json={"access_token": "provider-access-token"})
+            return HttpxResponse(
+                200,
+                json={"access_token": "provider-access-token", "id_token": id_token},
+            )
 
-        async def get(self, url: str, headers: dict[str, str], **kwargs) -> HttpxResponse:
+        async def get(
+            self,
+            url: str,
+            headers: dict[str, str] | None = None,
+            **kwargs,
+        ) -> HttpxResponse:
+            if url.endswith("/.well-known/openid-configuration"):
+                return HttpxResponse(
+                    200,
+                    json={
+                        "issuer": "https://idp.example.test",
+                        "token_endpoint": "https://idp.example.test/token",
+                        "userinfo_endpoint": "https://idp.example.test/userinfo",
+                        "jwks_uri": "https://idp.example.test/jwks",
+                    },
+                )
+            if url.endswith("/jwks"):
+                return HttpxResponse(200, json={"keys": [public_jwk]})
             assert url == "https://idp.example.test/userinfo"
+            assert headers is not None
             assert headers["Authorization"] == "Bearer provider-access-token"
             return HttpxResponse(
                 200,
@@ -263,6 +316,7 @@ async def test_oidc_callback_exchanges_code_and_auto_provisions_user(monkeypatch
         )
     )
     client.cookies.set("eve_sso_state", "expected-state")
+    client.cookies.set("eve_sso_nonce", "expected-nonce")
 
     response = client.get("/auth/sso/oidc/callback?code=auth-code&state=expected-state")
 
@@ -280,6 +334,176 @@ async def test_oidc_callback_exchanges_code_and_auto_provisions_user(monkeypatch
         assert stored_user.display_name == "New User"
         assert stored_user.role_id == role.id
 
+    await sessionmaker.kw["bind"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_oidc_callback_validates_id_token_with_discovery_jwks_and_nonce(
+    monkeypatch,
+) -> None:
+    """OIDC login validates the signed ID token before trusting provider identity."""
+    sessionmaker = create_sessionmaker("sqlite+aiosqlite:///:memory:")
+    async with sessionmaker.kw["bind"].begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    async with sessionmaker() as session:
+        role = Role(id=uuid4(), name="Analyst", is_system_role=True, permissions=["findings:read"])
+        session.add_all(
+            [
+                role,
+                SsoConfiguration(
+                    id="default",
+                    enabled=True,
+                    provider="oidc",
+                    issuer_url="https://idp.example.test",
+                    client_id="eve-client",
+                    auto_provision=True,
+                    default_role="Analyst",
+                ),
+            ]
+        )
+        await session.commit()
+
+    id_token, public_jwk = _signed_oidc_token()
+    calls: list[tuple[str, str]] = []
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self) -> FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def post(self, url: str, *args, **kwargs) -> HttpxResponse:
+            calls.append(("POST", url))
+            return HttpxResponse(
+                200,
+                json={"access_token": "provider-access-token", "id_token": id_token},
+            )
+
+        async def get(self, url: str, *args, **kwargs) -> HttpxResponse:
+            calls.append(("GET", url))
+            if url.endswith("/.well-known/openid-configuration"):
+                return HttpxResponse(
+                    200,
+                    json={
+                        "issuer": "https://idp.example.test",
+                        "token_endpoint": "https://idp.example.test/oauth/token",
+                        "userinfo_endpoint": "https://idp.example.test/oauth/userinfo",
+                        "jwks_uri": "https://idp.example.test/oauth/jwks",
+                    },
+                )
+            if url.endswith("/oauth/jwks"):
+                return HttpxResponse(200, json={"keys": [public_jwk]})
+            if url.endswith("/oauth/userinfo"):
+                return HttpxResponse(
+                    200,
+                    json={
+                        "sub": "user-123",
+                        "email": "new.user@example.test",
+                        "email_verified": True,
+                        "name": "New User",
+                    },
+                )
+            raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr("app.routers.auth.httpx.AsyncClient", FakeAsyncClient)
+
+    client = TestClient(
+        create_app(
+            settings=Settings(
+                auth_secret_key="test-signing-key",  # noqa: S106
+                cookie_secure=False,
+                api_base_url="http://localhost:8001",
+            ),
+            sessionmaker=sessionmaker,
+        )
+    )
+    client.cookies.set("eve_sso_state", "expected-state")
+    client.cookies.set("eve_sso_nonce", "expected-nonce")
+
+    response = client.get("/auth/sso/oidc/callback?code=auth-code&state=expected-state")
+
+    assert response.status_code == 200
+    assert response.json()["user"]["email"] == "new.user@example.test"
+    assert ("GET", "https://idp.example.test/.well-known/openid-configuration") in calls
+    assert ("POST", "https://idp.example.test/oauth/token") in calls
+    assert ("GET", "https://idp.example.test/oauth/jwks") in calls
+    assert ("GET", "https://idp.example.test/oauth/userinfo") in calls
+    await sessionmaker.kw["bind"].dispose()
+
+
+@pytest.mark.asyncio
+async def test_oidc_callback_rejects_id_token_with_wrong_nonce(monkeypatch) -> None:
+    """The ID token nonce must match the nonce bound to the browser login attempt."""
+    sessionmaker = create_sessionmaker("sqlite+aiosqlite:///:memory:")
+    async with sessionmaker.kw["bind"].begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+
+    async with sessionmaker() as session:
+        session.add(
+            SsoConfiguration(
+                id="default",
+                enabled=True,
+                provider="oidc",
+                issuer_url="https://idp.example.test",
+                client_id="eve-client",
+            )
+        )
+        await session.commit()
+
+    id_token, public_jwk = _signed_oidc_token(nonce="wrong-nonce")
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self) -> FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def post(self, *args, **kwargs) -> HttpxResponse:
+            return HttpxResponse(
+                200,
+                json={"access_token": "provider-access-token", "id_token": id_token},
+            )
+
+        async def get(self, url: str, *args, **kwargs) -> HttpxResponse:
+            if url.endswith("/.well-known/openid-configuration"):
+                return HttpxResponse(
+                    200,
+                    json={
+                        "issuer": "https://idp.example.test",
+                        "token_endpoint": "https://idp.example.test/token",
+                        "userinfo_endpoint": "https://idp.example.test/userinfo",
+                        "jwks_uri": "https://idp.example.test/jwks",
+                    },
+                )
+            if url.endswith("/jwks"):
+                return HttpxResponse(200, json={"keys": [public_jwk]})
+            return HttpxResponse(200, json={"email": "new.user@example.test"})
+
+    monkeypatch.setattr("app.routers.auth.httpx.AsyncClient", FakeAsyncClient)
+
+    client = TestClient(
+        create_app(
+            settings=Settings(auth_secret_key="test-signing-key", cookie_secure=False),  # noqa: S106
+            sessionmaker=sessionmaker,
+        )
+    )
+    client.cookies.set("eve_sso_state", "expected-state")
+    client.cookies.set("eve_sso_nonce", "expected-nonce")
+
+    response = client.get("/auth/sso/oidc/callback?code=auth-code&state=expected-state")
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "SSO ID token is invalid"}
+    assert "eve_access_token" not in client.cookies
     await sessionmaker.kw["bind"].dispose()
 
 
@@ -310,6 +534,8 @@ async def test_oidc_callback_rejects_unknown_user_when_auto_provisioning_is_disa
         )
         await session.commit()
 
+    id_token, public_jwk = _signed_oidc_token()
+
     class FakeAsyncClient:
         def __init__(self, *args, **kwargs) -> None:
             pass
@@ -321,9 +547,24 @@ async def test_oidc_callback_rejects_unknown_user_when_auto_provisioning_is_disa
             return None
 
         async def post(self, *args, **kwargs) -> HttpxResponse:
-            return HttpxResponse(200, json={"access_token": "provider-access-token"})
+            return HttpxResponse(
+                200,
+                json={"access_token": "provider-access-token", "id_token": id_token},
+            )
 
-        async def get(self, *args, **kwargs) -> HttpxResponse:
+        async def get(self, url: str, *args, **kwargs) -> HttpxResponse:
+            if url.endswith("/.well-known/openid-configuration"):
+                return HttpxResponse(
+                    200,
+                    json={
+                        "issuer": "https://idp.example.test",
+                        "token_endpoint": "https://idp.example.test/token",
+                        "userinfo_endpoint": "https://idp.example.test/userinfo",
+                        "jwks_uri": "https://idp.example.test/jwks",
+                    },
+                )
+            if url.endswith("/jwks"):
+                return HttpxResponse(200, json={"keys": [public_jwk]})
             return HttpxResponse(
                 200,
                 json={"email": "missing@example.test", "email_verified": True},
@@ -338,6 +579,7 @@ async def test_oidc_callback_rejects_unknown_user_when_auto_provisioning_is_disa
         )
     )
     client.cookies.set("eve_sso_state", "expected-state")
+    client.cookies.set("eve_sso_nonce", "expected-nonce")
 
     response = client.get("/auth/sso/oidc/callback?code=auth-code&state=expected-state")
 

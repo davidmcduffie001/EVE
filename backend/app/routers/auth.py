@@ -11,6 +11,7 @@ from urllib.parse import urlencode
 from uuid import UUID
 
 import httpx
+import jwt
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field, field_validator
@@ -251,6 +252,7 @@ def create_auth_router(
         code: str | None = None,
         error: str | None = None,
         state_cookie: str | None = Cookie(default=None, alias=SSO_STATE_COOKIE),
+        nonce_cookie: str | None = Cookie(default=None, alias=SSO_NONCE_COOKIE),
         session: AsyncSession = db_session,
     ) -> AuthResponse:
         """Receive the OIDC authorization callback."""
@@ -263,6 +265,8 @@ def create_auth_router(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid SSO state")
         if not code:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing OIDC code")
+        if not nonce_cookie:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid SSO nonce")
         configuration = await _require_enabled_sso(session)
         if configuration.provider != "oidc":
             raise HTTPException(
@@ -270,15 +274,24 @@ def create_auth_router(
                 detail="OIDC SSO is not configured",
             )
 
+        discovery = await _fetch_oidc_discovery(configuration)
         token_response = await _exchange_oidc_code(
             settings=settings,
             configuration=configuration,
+            discovery=discovery,
             code=code,
         )
-        userinfo = await _fetch_oidc_userinfo(
+        id_claims = await _validate_oidc_id_token(
             configuration=configuration,
+            discovery=discovery,
+            token_response=token_response,
+            expected_nonce=nonce_cookie,
+        )
+        userinfo = await _fetch_oidc_userinfo(
+            discovery=discovery,
             token_response=token_response,
         )
+        _validate_oidc_subject(id_claims=id_claims, userinfo=userinfo)
         user, role = await _resolve_sso_user(
             session=session,
             configuration=configuration,
@@ -569,9 +582,10 @@ async def _exchange_oidc_code(
     *,
     settings: Settings,
     configuration: SsoConfiguration,
+    discovery: dict[str, object],
     code: str,
 ) -> dict[str, object]:
-    token_endpoint = _oidc_provider_endpoint(configuration, "token")
+    token_endpoint = _oidc_endpoint(discovery, "token_endpoint")
     form = {
         "grant_type": "authorization_code",
         "code": code,
@@ -600,13 +614,13 @@ async def _exchange_oidc_code(
 
 async def _fetch_oidc_userinfo(
     *,
-    configuration: SsoConfiguration,
+    discovery: dict[str, object],
     token_response: dict[str, object],
 ) -> dict[str, object]:
     access_token = token_response["access_token"]
     async with httpx.AsyncClient(timeout=10.0) as client:
         response = await client.get(
-            _oidc_provider_endpoint(configuration, "userinfo"),
+            _oidc_endpoint(discovery, "userinfo_endpoint"),
             headers={"Authorization": f"Bearer {access_token}"},
         )
     if response.status_code >= 400:
@@ -621,6 +635,104 @@ async def _fetch_oidc_userinfo(
             detail="SSO userinfo response is invalid",
         )
     return payload
+
+
+async def _fetch_oidc_discovery(configuration: SsoConfiguration) -> dict[str, object]:
+    discovery_url = configuration.metadata_url.strip() or (
+        f"{configuration.issuer_url.strip().rstrip('/')}/.well-known/openid-configuration"
+    )
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(discovery_url)
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="SSO discovery lookup failed",
+        )
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="SSO discovery response is invalid",
+        )
+
+    issuer = str(payload.get("issuer") or "").rstrip("/")
+    expected_issuer = configuration.issuer_url.strip().rstrip("/")
+    if issuer != expected_issuer:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="SSO discovery issuer is invalid",
+        )
+    for key in ["token_endpoint", "userinfo_endpoint", "jwks_uri"]:
+        _oidc_endpoint(payload, key)
+    return payload
+
+
+async def _validate_oidc_id_token(
+    *,
+    configuration: SsoConfiguration,
+    discovery: dict[str, object],
+    token_response: dict[str, object],
+    expected_nonce: str,
+) -> dict[str, object]:
+    id_token = token_response.get("id_token")
+    if not isinstance(id_token, str) or not id_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="SSO ID token is missing",
+        )
+
+    try:
+        header = jwt.get_unverified_header(id_token)
+        key_id = str(header["kid"])
+    except (KeyError, jwt.PyJWTError) as exc:
+        raise _invalid_oidc_id_token() from exc
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(_oidc_endpoint(discovery, "jwks_uri"))
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="SSO JWKS lookup failed",
+        )
+
+    jwks_payload = response.json()
+    if not isinstance(jwks_payload, dict):
+        raise _invalid_oidc_id_token()
+    try:
+        key_set = jwt.PyJWKSet.from_dict(jwks_payload)
+    except jwt.PyJWTError as exc:
+        raise _invalid_oidc_id_token() from exc
+
+    signing_key = next((key for key in key_set.keys if key.key_id == key_id), None)
+    if signing_key is None:
+        raise _invalid_oidc_id_token()
+
+    try:
+        claims = jwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=["RS256"],
+            audience=configuration.client_id.strip(),
+            issuer=str(discovery["issuer"]),
+            options={"require": ["exp", "iat", "sub", "nonce"]},
+        )
+    except jwt.PyJWTError as exc:
+        raise _invalid_oidc_id_token() from exc
+
+    if not isinstance(claims, dict):
+        raise _invalid_oidc_id_token()
+    nonce = str(claims.get("nonce") or "")
+    if not hmac.compare_digest(nonce, expected_nonce):
+        raise _invalid_oidc_id_token()
+    return claims
+
+
+def _validate_oidc_subject(*, id_claims: dict[str, object], userinfo: dict[str, object]) -> None:
+    userinfo_subject = userinfo.get("sub")
+    if userinfo_subject is None:
+        return
+    if str(id_claims.get("sub") or "") != str(userinfo_subject):
+        raise _invalid_oidc_id_token()
 
 
 async def _resolve_sso_user(
@@ -679,14 +791,14 @@ def _oidc_email(userinfo: dict[str, object]) -> str:
     return email
 
 
-def _oidc_provider_endpoint(configuration: SsoConfiguration, endpoint: str) -> str:
-    issuer_url = configuration.issuer_url.strip().rstrip("/")
-    if not issuer_url:
+def _oidc_endpoint(discovery: dict[str, object], key: str) -> str:
+    endpoint = discovery.get(key)
+    if not isinstance(endpoint, str) or not endpoint.strip().startswith("https://"):
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="OIDC SSO is missing issuer URL",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="SSO discovery response is invalid",
         )
-    return f"{issuer_url}/{endpoint}"
+    return endpoint.strip()
 
 
 def _decrypt_sso_secret(*, settings: Settings, configuration: SsoConfiguration) -> str | None:
@@ -785,4 +897,11 @@ def _csrf_failed() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
         detail="CSRF validation failed",
+    )
+
+
+def _invalid_oidc_id_token() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="SSO ID token is invalid",
     )
