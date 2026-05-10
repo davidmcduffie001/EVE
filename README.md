@@ -33,6 +33,7 @@ Phase 1 does not include exploit execution, execution credentials, or execution-
 - Seed services initialize built-in roles plus NVD and SearchSploit metadata sources idempotently.
 - A small repository primitive supports basic async model persistence.
 - Local authentication primitives now cover password hashing, signed access tokens, and revocable refresh sessions.
+- The first auth API endpoints support login, refresh-token rotation, logout, current-user lookup, secure browser cookies, and CSRF checks for cookie-authenticated state changes.
 
 ## Local Development
 
