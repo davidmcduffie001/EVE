@@ -32,6 +32,26 @@ describe("App", () => {
     expect(markup).toContain("Admin User");
   });
 
+  it("renders the authenticated account settings surface", () => {
+    const markup = renderToString(
+      <App
+        initialView="settings"
+        initialUser={{
+          id: "user-1",
+          email: "admin@example.test",
+          display_name: "Admin User",
+          role: "Admin",
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Account Settings");
+    expect(markup).toContain("Profile");
+    expect(markup).toContain("Password");
+    expect(markup).toContain("Preferences");
+    expect(markup).toContain("MFA");
+  });
+
   it("builds CSRF headers from the readable CSRF cookie", () => {
     const headers = buildAuthHeaders("eve_access_token=opaque; eve_csrf_token=csrf-123");
 
