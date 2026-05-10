@@ -14,10 +14,28 @@ describe("App", () => {
     expect(markup).toContain("Password");
   });
 
-  it("renders an SSO login action before a user session exists", () => {
+  it("renders an inaccessible SSO action before SSO is configured", () => {
     const markup = renderToString(<App />);
 
     expect(markup).toContain("Continue with SSO");
+    expect(markup).toContain("SSO has not been configured by an administrator.");
+    expect(markup).toContain("disabled=\"\"");
+    expect(markup).not.toContain('href="http://localhost:8001/auth/sso/login"');
+  });
+
+  it("renders an SSO login link when SSO is configured", () => {
+    const markup = renderToString(
+      <App
+        initialSsoStatus={{
+          enabled: true,
+          provider: "oidc",
+          display_name: "Corporate IdP",
+          login_url: "http://localhost:8001/auth/sso/login",
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Continue with Corporate IdP");
     expect(markup).toContain('href="http://localhost:8001/auth/sso/login"');
   });
 
