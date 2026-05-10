@@ -1,0 +1,16 @@
+---
+name: Bug report
+about: Report a reproducible EVE issue
+title: ""
+labels: bug
+assignees: ""
+---
+
+## Description
+
+## Steps to Reproduce
+
+## Expected Behavior
+
+## Actual Behavior
+

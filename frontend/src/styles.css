@@ -1,0 +1,166 @@
+:root {
+  color: #e8eef8;
+  background: #0c1117;
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 1024px;
+  min-height: 100vh;
+  background: #0c1117;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font: inherit;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  border-right: 1px solid #1e2a36;
+  background: #101820;
+  padding: 24px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 32px;
+}
+
+.brand-logo {
+  width: 42px;
+  height: 42px;
+}
+
+.brand strong,
+.brand span {
+  display: block;
+}
+
+.brand strong {
+  font-size: 18px;
+}
+
+.brand span,
+.eyebrow {
+  color: #91a4b7;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.nav-list {
+  display: grid;
+  gap: 6px;
+}
+
+.nav-list a {
+  border-radius: 8px;
+  color: #b9c7d6;
+  padding: 11px 12px;
+}
+
+.nav-list a.active,
+.nav-list a:hover {
+  background: #1a2835;
+  color: #ffffff;
+}
+
+.workspace {
+  padding: 32px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 28px;
+}
+
+.topbar h1 {
+  margin: 4px 0 0;
+  font-size: 32px;
+  line-height: 1.15;
+}
+
+.primary-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 8px;
+  background: #4fb3a3;
+  color: #051312;
+  cursor: pointer;
+  font-weight: 700;
+  padding: 11px 14px;
+}
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.stat-card,
+.empty-state {
+  border: 1px solid #1e2a36;
+  border-radius: 8px;
+  background: #121c25;
+}
+
+.stat-card {
+  display: grid;
+  gap: 10px;
+  padding: 18px;
+}
+
+.stat-card svg {
+  color: #4fb3a3;
+}
+
+.stat-card span {
+  color: #a8b7c7;
+  font-size: 14px;
+}
+
+.stat-card strong {
+  font-size: 28px;
+}
+
+.empty-state {
+  padding: 28px;
+  max-width: 760px;
+}
+
+.empty-state h2 {
+  margin: 0 0 8px;
+}
+
+.empty-state p {
+  color: #b9c7d6;
+  line-height: 1.6;
+  margin: 0;
+}
+
