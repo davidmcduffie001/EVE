@@ -93,6 +93,37 @@ def test_admin_can_list_users_and_roles(
     assert [role["name"] for role in roles_response.json()["items"]] == ["Admin", "Analyst"]
 
 
+def test_admin_can_read_and_update_sso_settings_stub(
+    admin_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    """Admins can configure the stubbed SSO settings surface."""
+    client, _sessionmaker = admin_client
+    _login(client)
+
+    current = client.get("/admin/sso")
+    updated = client.put(
+        "/admin/sso",
+        json={
+            "enabled": True,
+            "provider": "oidc",
+            "display_name": "Corporate IdP",
+            "issuer_url": "https://idp.example.test",
+            "client_id": "eve-client",
+            "metadata_url": "https://idp.example.test/.well-known/openid-configuration",
+            "auto_provision": True,
+            "default_role": "Analyst",
+        },
+        headers=_csrf_headers(client),
+    )
+
+    assert current.status_code == 200
+    assert current.json()["enabled"] is False
+    assert updated.status_code == 200
+    assert updated.json()["enabled"] is True
+    assert updated.json()["provider"] == "oidc"
+    assert updated.json()["client_secret_configured"] is False
+
+
 def test_non_admin_user_management_denial_is_audited(
     admin_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
 ) -> None:

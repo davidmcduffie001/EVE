@@ -14,6 +14,7 @@ from app.core.config import Settings
 from app.core.database import get_db_session
 from app.models.base import Role, User
 from app.services.audit import AuditLogService
+from app.services.auth.permissions import PERMISSIONS
 from app.services.auth.security import InvalidTokenError, TokenSigner
 
 
@@ -124,8 +125,14 @@ def serialize_authenticated_user(user: User, role: Role) -> AuthenticatedUser:
         display_name=user.display_name,
         role_id=role.id,
         role_name=role.name,
-        permissions=frozenset(role.permissions),
+        permissions=_effective_role_permissions(role),
     )
+
+
+def _effective_role_permissions(role: Role) -> frozenset[str]:
+    if role.is_system_role and role.name == "Admin":
+        return frozenset(PERMISSIONS)
+    return frozenset(role.permissions)
 
 
 def client_host(request: Request) -> str | None:

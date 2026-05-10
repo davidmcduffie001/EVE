@@ -123,6 +123,25 @@ describe("App", () => {
     expect(markup).toContain("Triage");
   });
 
+  it("treats the built-in Admin role as authorized even without a populated permission array", () => {
+    const markup = renderToString(
+      <App
+        initialView="admin"
+        initialUser={{
+          id: "user-1",
+          email: "admin@example.test",
+          display_name: "Admin User",
+          role: "Admin",
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Local Users");
+    expect(markup).toContain("Create Role");
+    expect(markup).toContain("Audit Log");
+    expect(markup).not.toContain("You are not authorized to view administration content.");
+  });
+
   it("shows administration navigation with an authorization message for users without administrative permissions", () => {
     const markup = renderToString(
       <App
@@ -198,6 +217,37 @@ describe("App", () => {
     expect(markup).toContain("Create Role");
     expect(markup).not.toContain("Local Users");
     expect(markup).not.toContain("Create User");
+  });
+
+  it("renders SSO configuration for role administrators", () => {
+    const markup = renderToString(
+      <App
+        initialView="admin"
+        initialUser={{
+          id: "user-3",
+          email: "role-admin@example.test",
+          display_name: "Role Admin",
+          role: "Role Manager",
+          permissions: ["roles:manage"],
+        }}
+        initialSsoSettings={{
+          enabled: true,
+          provider: "oidc",
+          display_name: "Corporate IdP",
+          issuer_url: "https://idp.example.test",
+          client_id: "eve-client",
+          metadata_url: "https://idp.example.test/.well-known/openid-configuration",
+          auto_provision: true,
+          default_role: "Analyst",
+          client_secret_configured: false,
+        }}
+      />,
+    );
+
+    expect(markup).toContain("SSO Configuration");
+    expect(markup).toContain("Corporate IdP");
+    expect(markup).toContain("OpenID Connect");
+    expect(markup).toContain("Save SSO Settings");
   });
 
   it("renders the audit log beneath administration controls for audit readers", () => {

@@ -58,6 +58,7 @@ type AppProps = {
   initialAdminUsers?: AdminUser[];
   initialAdminRoles?: AdminRole[];
   initialAuditLogEntries?: AuditLogEntry[];
+  initialSsoSettings?: SsoSettings;
 };
 
 type LoginState = "idle" | "submitting" | "failed" | "disabled" | "mfa" | "mfa-submitting";
@@ -135,9 +136,32 @@ type AuditLogEntry = {
   entry_hash: string;
 };
 
+type SsoSettings = {
+  enabled: boolean;
+  provider: "oidc" | "saml";
+  display_name: string;
+  issuer_url: string;
+  client_id: string;
+  metadata_url: string;
+  auto_provision: boolean;
+  default_role: string;
+  client_secret_configured: boolean;
+};
+
 const emptyAdminUsers: AdminUser[] = [];
 const emptyAdminRoles: AdminRole[] = [];
 const emptyAuditLogEntries: AuditLogEntry[] = [];
+const defaultSsoSettings: SsoSettings = {
+  enabled: false,
+  provider: "oidc",
+  display_name: "",
+  issuer_url: "",
+  client_id: "",
+  metadata_url: "",
+  auto_provision: false,
+  default_role: "Analyst",
+  client_secret_configured: false,
+};
 
 type NavItem = {
   label: string;
@@ -252,6 +276,7 @@ export function App({
   initialAdminUsers = emptyAdminUsers,
   initialAdminRoles = emptyAdminRoles,
   initialAuditLogEntries = emptyAuditLogEntries,
+  initialSsoSettings = defaultSsoSettings,
 }: AppProps) {
   const [user, setUser] = useState<AuthenticatedUser | null>(
     initialUser ?? getPreviewUser(getCurrentSearch(), import.meta.env.DEV),
@@ -518,6 +543,7 @@ export function App({
             canManageRoles={canManageRoles}
             canReadAudit={canReadAudit}
             initialAuditLogEntries={initialAuditLogEntries}
+            initialSsoSettings={initialSsoSettings}
             onNotify={showToast}
           />
         ) : (
@@ -653,6 +679,7 @@ function AdminWorkspace({
   initialUsers,
   initialRoles,
   initialAuditLogEntries,
+  initialSsoSettings,
   canManageUsers,
   canManageRoles,
   canReadAudit,
@@ -661,6 +688,7 @@ function AdminWorkspace({
   initialUsers: AdminUser[];
   initialRoles: AdminRole[];
   initialAuditLogEntries: AuditLogEntry[];
+  initialSsoSettings: SsoSettings;
   canManageUsers: boolean;
   canManageRoles: boolean;
   canReadAudit: boolean;
@@ -669,8 +697,10 @@ function AdminWorkspace({
   const [users, setUsers] = useState<AdminUser[]>(initialUsers);
   const [roles, setRoles] = useState<AdminRole[]>(initialRoles);
   const [auditLogEntries, setAuditLogEntries] = useState<AuditLogEntry[]>(initialAuditLogEntries);
+  const [ssoSettings, setSsoSettings] = useState<SsoSettings>(initialSsoSettings);
   const [userState, setUserState] = useState<SaveState>("idle");
   const [roleState, setRoleState] = useState<SaveState>("idle");
+  const [ssoState, setSsoState] = useState<SaveState>("idle");
   const [rowState, setRowState] = useState<Record<string, SaveState>>({});
   const hasAdministrationAccess = canManageUsers || canManageRoles || canReadAudit;
 
@@ -736,6 +766,32 @@ function AdminWorkspace({
     };
   }, [canReadAudit, initialAuditLogEntries, onNotify]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSsoSettings() {
+      if (!canManageRoles) {
+        setSsoSettings(initialSsoSettings);
+        return;
+      }
+      try {
+        const response = await fetchJson<SsoSettings>("/admin/sso");
+        if (!cancelled) {
+          setSsoSettings(response);
+        }
+      } catch {
+        if (!cancelled) {
+          onNotify({ message: "Unable to load SSO settings.", tone: "error" });
+        }
+      }
+    }
+
+    loadSsoSettings();
+    return () => {
+      cancelled = true;
+    };
+  }, [canManageRoles, initialSsoSettings, onNotify]);
+
   async function handleCreateUser(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = event.currentTarget;
@@ -781,6 +837,36 @@ function AdminWorkspace({
     } catch {
       setRoleState("idle");
       onNotify({ message: "Unable to create role.", tone: "error" });
+    }
+  }
+
+  async function handleSsoSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    setSsoState("saving");
+    try {
+      const nextSettings = await fetchJson<SsoSettings>("/admin/sso", {
+        method: "PUT",
+        body: JSON.stringify({
+          enabled: formData.get("enabled") === "on",
+          provider: formData.get("provider"),
+          display_name: formData.get("display_name"),
+          issuer_url: formData.get("issuer_url"),
+          client_id: formData.get("client_id"),
+          metadata_url: formData.get("metadata_url"),
+          client_secret: formData.get("client_secret") || undefined,
+          auto_provision: formData.get("auto_provision") === "on",
+          default_role: formData.get("default_role"),
+        }),
+      });
+      setSsoSettings(nextSettings);
+      setSsoState("idle");
+      onNotify({ message: "SSO settings saved." });
+      form.reset();
+    } catch {
+      setSsoState("idle");
+      onNotify({ message: "Unable to save SSO settings.", tone: "error" });
     }
   }
 
@@ -1098,6 +1184,68 @@ function AdminWorkspace({
           <button className="primary-action" type="submit" disabled={roleState === "saving"}>
             <Plus size={17} aria-hidden="true" />
             Create Role
+          </button>
+        </form>
+      </section>
+      ) : null}
+
+      {canManageRoles ? (
+      <section className="panel settings-panel sso-panel">
+        <div className="panel-header">
+          <div>
+            <h2>SSO Configuration</h2>
+            <p>Configure an external identity provider for future SSO enforcement.</p>
+          </div>
+          <ShieldCheck size={18} aria-hidden="true" />
+        </div>
+        <form className="settings-form settings-form-inline" onSubmit={handleSsoSubmit}>
+          <label>
+            <span>Enabled</span>
+            <input name="enabled" type="checkbox" defaultChecked={ssoSettings.enabled} />
+          </label>
+          <label>
+            Provider
+            <select name="provider" defaultValue={ssoSettings.provider}>
+              <option value="oidc">OpenID Connect</option>
+              <option value="saml">SAML 2.0</option>
+            </select>
+          </label>
+          <label>
+            Display name
+            <input name="display_name" defaultValue={ssoSettings.display_name} />
+          </label>
+          <label>
+            Default role
+            <input name="default_role" defaultValue={ssoSettings.default_role} />
+          </label>
+          <label>
+            Issuer URL
+            <input name="issuer_url" type="url" defaultValue={ssoSettings.issuer_url} />
+          </label>
+          <label>
+            Metadata URL
+            <input name="metadata_url" type="url" defaultValue={ssoSettings.metadata_url} />
+          </label>
+          <label>
+            Client ID
+            <input name="client_id" defaultValue={ssoSettings.client_id} />
+          </label>
+          <label>
+            Client secret
+            <input
+              name="client_secret"
+              type="password"
+              placeholder={ssoSettings.client_secret_configured ? "Configured" : "Not configured"}
+              autoComplete="new-password"
+            />
+          </label>
+          <label>
+            <span>Auto provision users</span>
+            <input name="auto_provision" type="checkbox" defaultChecked={ssoSettings.auto_provision} />
+          </label>
+          <button className="primary-action" type="submit" disabled={ssoState === "saving"}>
+            <Save size={17} aria-hidden="true" />
+            Save SSO Settings
           </button>
         </form>
       </section>
@@ -1571,6 +1719,9 @@ function formatAuditResource(entry: AuditLogEntry) {
 }
 
 function hasPermission(user: AuthenticatedUser, permission: string) {
+  if (user.role === "Admin") {
+    return true;
+  }
   return user.permissions?.includes("*") || user.permissions?.includes(permission) || false;
 }
 

@@ -171,6 +171,37 @@ class UserUpdateRequest(BaseModel):
         return normalized
 
 
+class SsoSettingsResponse(BaseModel):
+    """Stubbed SSO configuration returned to administrators."""
+
+    enabled: bool = False
+    provider: str = "oidc"
+    display_name: str = ""
+    issuer_url: str = ""
+    client_id: str = ""
+    metadata_url: str = ""
+    auto_provision: bool = False
+    default_role: str = "Analyst"
+    client_secret_configured: bool = False
+
+
+class SsoSettingsUpdateRequest(BaseModel):
+    """Stubbed SSO configuration update request."""
+
+    enabled: bool = False
+    provider: str = Field(default="oidc", pattern="^(oidc|saml)$")
+    display_name: str = Field(default="", max_length=200)
+    issuer_url: str = Field(default="", max_length=2048)
+    client_id: str = Field(default="", max_length=255)
+    metadata_url: str = Field(default="", max_length=2048)
+    client_secret: str | None = Field(default=None, max_length=2048)
+    auto_provision: bool = False
+    default_role: str = Field(default="Analyst", max_length=120)
+
+
+_sso_settings = SsoSettingsResponse()
+
+
 def create_admin_router(
     settings: Settings,
     sessionmaker: async_sessionmaker[AsyncSession],
@@ -211,6 +242,49 @@ def create_admin_router(
             page_size=page_size,
             total=total or 0,
         )
+
+    @router.get("/sso", response_model=SsoSettingsResponse)
+    async def get_sso_settings(
+        _user: AuthenticatedUser = role_manager,
+    ) -> SsoSettingsResponse:
+        """Return stubbed SSO configuration. Requires `roles:manage`."""
+        return _sso_settings
+
+    @router.put("/sso", response_model=SsoSettingsResponse)
+    async def update_sso_settings(
+        payload: SsoSettingsUpdateRequest,
+        http_request: Request,
+        csrf_cookie: str | None = Cookie(default=None, alias=settings.csrf_cookie_name),
+        csrf_header: str | None = Header(default=None, alias=settings.csrf_header_name),
+        actor: AuthenticatedUser = role_manager,
+        session: AsyncSession = db_session,
+    ) -> SsoSettingsResponse:
+        """Update stubbed SSO configuration. Requires `roles:manage`."""
+        _validate_csrf(csrf_cookie=csrf_cookie, csrf_header=csrf_header)
+        global _sso_settings
+        _sso_settings = SsoSettingsResponse(
+            enabled=payload.enabled,
+            provider=payload.provider,
+            display_name=payload.display_name.strip(),
+            issuer_url=payload.issuer_url.strip(),
+            client_id=payload.client_id.strip(),
+            metadata_url=payload.metadata_url.strip(),
+            auto_provision=payload.auto_provision,
+            default_role=payload.default_role.strip(),
+            client_secret_configured=bool(payload.client_secret)
+            or _sso_settings.client_secret_configured,
+        )
+        await _record_admin_event(
+            session=session,
+            http_request=http_request,
+            actor=actor,
+            action="admin.sso_update",
+            resource_type="sso",
+            resource_id="default",
+            metadata={"enabled": _sso_settings.enabled, "provider": _sso_settings.provider},
+        )
+        await session.commit()
+        return _sso_settings
 
     @router.get("/users", response_model=UserListResponse)
     async def list_users(
