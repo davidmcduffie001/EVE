@@ -577,6 +577,23 @@ tbody tr:hover {
   gap: 16px;
 }
 
+.login-divider {
+  display: grid;
+  align-items: center;
+  min-height: 1px;
+}
+
+.login-divider span {
+  display: block;
+  height: 1px;
+  background: #263437;
+}
+
+.sso-login-action {
+  min-height: 42px;
+  text-decoration: none;
+}
+
 .login-form label {
   display: grid;
   gap: 7px;
@@ -975,6 +992,10 @@ td > select {
 .theme-light .nav-list button:hover {
   background: #dbe7e8;
   color: #0f1719;
+}
+
+.theme-light .login-divider span {
+  background: #d6e1e3;
 }
 
 .theme-light .scope-icon,

@@ -14,6 +14,13 @@ describe("App", () => {
     expect(markup).toContain("Password");
   });
 
+  it("renders an SSO login action before a user session exists", () => {
+    const markup = renderToString(<App />);
+
+    expect(markup).toContain("Continue with SSO");
+    expect(markup).toContain('href="http://localhost:8001/auth/sso/login"');
+  });
+
   it("renders the authenticated dashboard when an initial user is provided", () => {
     const markup = renderToString(
       <App
@@ -247,6 +254,7 @@ describe("App", () => {
     expect(markup).toContain("SSO Configuration");
     expect(markup).toContain("Corporate IdP");
     expect(markup).toContain("OpenID Connect");
+    expect(markup).toContain("http://localhost:8001/auth/sso/oidc/callback");
     expect(markup).toContain("Save SSO Settings");
   });
 

@@ -42,6 +42,8 @@ import { getPreviewUser } from "../auth/preview";
 import { buildAuthHeaders } from "../auth/session";
 
 const API_BASE_URL = import.meta.env.VITE_EVE_API_BASE_URL ?? "http://localhost:8001";
+const OIDC_REDIRECT_URI = `${API_BASE_URL}/auth/sso/oidc/callback`;
+const SSO_LOGIN_URL = `${API_BASE_URL}/auth/sso/login`;
 
 export type AuthenticatedUser = {
   id: string;
@@ -435,7 +437,14 @@ export function App({
   }
 
   if (!user) {
-    return <LoginScreen loginState={loginState} onSubmit={handleLogin} onMfaSubmit={handleMfaLogin} />;
+    return (
+      <LoginScreen
+        loginState={loginState}
+        onSubmit={handleLogin}
+        onMfaSubmit={handleMfaLogin}
+        ssoLoginUrl={SSO_LOGIN_URL}
+      />
+    );
   }
 
   const title = effectiveActiveView === "settings" ? "Account Settings" : effectiveActiveView === "admin" ? "Administration" : "Findings Dashboard";
@@ -1194,11 +1203,12 @@ function AdminWorkspace({
         <div className="panel-header">
           <div>
             <h2>SSO Configuration</h2>
-            <p>Configure an external identity provider for future SSO enforcement.</p>
+            <p>Configure browser SSO through an external identity provider.</p>
           </div>
           <ShieldCheck size={18} aria-hidden="true" />
         </div>
         <form className="settings-form settings-form-inline" onSubmit={handleSsoSubmit}>
+          <p className="form-note">Register this redirect URI with your OIDC provider: {OIDC_REDIRECT_URI}</p>
           <label>
             <span>Enabled</span>
             <input name="enabled" type="checkbox" defaultChecked={ssoSettings.enabled} />
@@ -1755,10 +1765,12 @@ function LoginScreen({
   loginState,
   onSubmit,
   onMfaSubmit,
+  ssoLoginUrl,
 }: {
   loginState: LoginState;
   onSubmit: FormEventHandler<HTMLFormElement>;
   onMfaSubmit: FormEventHandler<HTMLFormElement>;
+  ssoLoginUrl: string;
 }) {
   const isSubmitting = loginState === "submitting" || loginState === "mfa-submitting";
   const needsMfa = loginState === "mfa" || loginState === "mfa-submitting";
@@ -1803,6 +1815,13 @@ function LoginScreen({
             <UserRound size={18} aria-hidden="true" />
             {isSubmitting ? "Signing in" : "Sign In"}
           </button>
+          <div className="login-divider" aria-hidden="true">
+            <span />
+          </div>
+          <a className="secondary-action sso-login-action" href={ssoLoginUrl}>
+            <KeyRound size={18} aria-hidden="true" />
+            Continue with SSO
+          </a>
         </form>
         ) : (
         <form className="login-form" onSubmit={onMfaSubmit}>
