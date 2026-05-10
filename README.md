@@ -17,7 +17,7 @@ EVE is being built for defensive vulnerability validation workflows. It does not
 - Role-based access control with built-in and custom roles
 - Tamper-evident audit logging for authentication and administrative events
 - User profile, password, MFA status, preference, and theme controls
-- SSO configuration foundation with OIDC browser login and SAML service-provider metadata
+- SSO configuration foundation with validated OIDC browser login and SAML service-provider metadata
 - PostgreSQL-backed FastAPI service layer with Alembic migrations
 - React and Vite frontend with dark/light theme support
 - Nessus-first scanner connector direction for initial integration work
