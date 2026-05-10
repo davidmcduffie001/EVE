@@ -619,18 +619,33 @@ tbody tr:hover {
 }
 
 .admin-users-panel,
-.admin-roles-panel {
+.admin-roles-panel,
+.audit-log-panel {
   padding: 0;
 }
 
 .admin-users-panel .panel-header,
-.admin-roles-panel .panel-header {
+.admin-roles-panel .panel-header,
+.audit-log-panel .panel-header {
   margin: 0;
   padding: 18px;
 }
 
+.authorization-panel,
+.audit-log-panel {
+  grid-column: 1 / -1;
+}
+
 .admin-table-wrap {
   border-top: 1px solid #253034;
+}
+
+.audit-table-wrap {
+  border-top: 1px solid #253034;
+}
+
+.audit-table-wrap table {
+  min-width: 780px;
 }
 
 .admin-table-wrap table {
