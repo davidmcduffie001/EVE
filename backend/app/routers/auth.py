@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hmac
 import secrets
 from datetime import UTC, datetime, timedelta
@@ -9,9 +10,11 @@ from html import escape
 from urllib.parse import urlencode
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
@@ -242,11 +245,14 @@ def create_auth_router(
 
     @router.get("/sso/oidc/callback")
     async def oidc_callback(
+        http_request: Request,
+        response: Response,
         state: str | None = None,
         code: str | None = None,
         error: str | None = None,
         state_cookie: str | None = Cookie(default=None, alias=SSO_STATE_COOKIE),
-    ) -> None:
+        session: AsyncSession = db_session,
+    ) -> AuthResponse:
         """Receive the OIDC authorization callback."""
         if error:
             raise HTTPException(
@@ -257,9 +263,37 @@ def create_auth_router(
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid SSO state")
         if not code:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing OIDC code")
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="OIDC token exchange is not implemented yet",
+        configuration = await _require_enabled_sso(session)
+        if configuration.provider != "oidc":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="OIDC SSO is not configured",
+            )
+
+        token_response = await _exchange_oidc_code(
+            settings=settings,
+            configuration=configuration,
+            code=code,
+        )
+        userinfo = await _fetch_oidc_userinfo(
+            configuration=configuration,
+            token_response=token_response,
+        )
+        user, role = await _resolve_sso_user(
+            session=session,
+            configuration=configuration,
+            userinfo=userinfo,
+            password_hasher=password_hasher,
+        )
+        _clear_sso_cookies(response, settings)
+        return await _issue_browser_session(
+            response=response,
+            http_request=http_request,
+            session=session,
+            settings=settings,
+            token_signer=token_signer,
+            user=user,
+            role=role,
         )
 
     @router.get("/sso/saml/metadata")
@@ -531,6 +565,157 @@ def _oidc_authorization_url(
     return f"{issuer_url}/authorize?{query}"
 
 
+async def _exchange_oidc_code(
+    *,
+    settings: Settings,
+    configuration: SsoConfiguration,
+    code: str,
+) -> dict[str, object]:
+    token_endpoint = _oidc_provider_endpoint(configuration, "token")
+    form = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "client_id": configuration.client_id.strip(),
+        "redirect_uri": _api_url(settings, "/auth/sso/oidc/callback"),
+    }
+    client_secret = _decrypt_sso_secret(settings=settings, configuration=configuration)
+    if client_secret is not None:
+        form["client_secret"] = client_secret
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.post(token_endpoint, data=form)
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="SSO token exchange failed",
+        )
+    payload = response.json()
+    if not isinstance(payload, dict) or not isinstance(payload.get("access_token"), str):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="SSO token response is invalid",
+        )
+    return payload
+
+
+async def _fetch_oidc_userinfo(
+    *,
+    configuration: SsoConfiguration,
+    token_response: dict[str, object],
+) -> dict[str, object]:
+    access_token = token_response["access_token"]
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.get(
+            _oidc_provider_endpoint(configuration, "userinfo"),
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    if response.status_code >= 400:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="SSO userinfo lookup failed",
+        )
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="SSO userinfo response is invalid",
+        )
+    return payload
+
+
+async def _resolve_sso_user(
+    *,
+    session: AsyncSession,
+    configuration: SsoConfiguration,
+    userinfo: dict[str, object],
+    password_hasher: PasswordHasher,
+) -> tuple[User, Role]:
+    email = _oidc_email(userinfo)
+    user_with_role = await fetch_user_with_role(session, email=email)
+    if user_with_role is not None:
+        user, role = user_with_role
+        if user.disabled_at is not None:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
+        return user, role
+
+    if not configuration.auto_provision:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="SSO user is not provisioned",
+        )
+
+    role_result = await session.execute(select(Role).where(Role.name == configuration.default_role))
+    role = role_result.scalar_one_or_none()
+    if role is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Default SSO role is not configured",
+        )
+
+    display_name = str(userinfo.get("name") or userinfo.get("preferred_username") or email).strip()
+    user = User(
+        email=email,
+        display_name=display_name,
+        role_id=role.id,
+        password_hash=password_hasher.hash_password(secrets.token_urlsafe(48)),
+    )
+    session.add(user)
+    await session.flush()
+    return user, role
+
+
+def _oidc_email(userinfo: dict[str, object]) -> str:
+    email = str(userinfo.get("email") or "").strip().lower()
+    if "@" not in email:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="SSO userinfo response is missing email",
+        )
+    if userinfo.get("email_verified") is False:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="SSO email is not verified",
+        )
+    return email
+
+
+def _oidc_provider_endpoint(configuration: SsoConfiguration, endpoint: str) -> str:
+    issuer_url = configuration.issuer_url.strip().rstrip("/")
+    if not issuer_url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="OIDC SSO is missing issuer URL",
+        )
+    return f"{issuer_url}/{endpoint}"
+
+
+def _decrypt_sso_secret(*, settings: Settings, configuration: SsoConfiguration) -> str | None:
+    encrypted = configuration.encrypted_client_secret
+    if not encrypted:
+        return None
+    if not encrypted.startswith("v1:"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="SSO client secret format is unsupported",
+        )
+    try:
+        ciphertext = base64.urlsafe_b64decode(encrypted.removeprefix("v1:").encode("ascii"))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="SSO client secret format is invalid",
+        ) from exc
+    key = settings.auth_secret_key.encode("utf-8")
+    keystream = bytearray()
+    counter = 0
+    while len(keystream) < len(ciphertext):
+        counter_bytes = counter.to_bytes(4, "big")
+        keystream.extend(hmac.digest(key, counter_bytes, "sha256"))
+        counter += 1
+    plaintext = bytes(value ^ keystream[index] for index, value in enumerate(ciphertext))
+    return plaintext.decode("utf-8")
+
+
 def _api_url(settings: Settings, path: str) -> str:
     return f"{str(settings.api_base_url).rstrip('/')}{path}"
 
@@ -545,6 +730,15 @@ def _clear_auth_cookies(response: Response, settings: Settings) -> None:
         settings.refresh_cookie_name,
         settings.csrf_cookie_name,
     ]:
+        response.delete_cookie(
+            key=cookie_name,
+            secure=settings.cookie_secure,
+            samesite=settings.cookie_samesite,
+        )
+
+
+def _clear_sso_cookies(response: Response, settings: Settings) -> None:
+    for cookie_name in [SSO_STATE_COOKIE, SSO_NONCE_COOKIE]:
         response.delete_cookie(
             key=cookie_name,
             secure=settings.cookie_secure,
