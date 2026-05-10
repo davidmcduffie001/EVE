@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.config import Settings
 from app.core.database import create_sessionmaker
 from app.main import create_app
-from app.models.base import AuditLog, Base, Role, User
+from app.models.base import AuditLog, Base, Role, SsoConfiguration, User
 from app.services.auth.security import PasswordHasher
 
 
@@ -93,11 +93,11 @@ def test_admin_can_list_users_and_roles(
     assert [role["name"] for role in roles_response.json()["items"]] == ["Admin", "Analyst"]
 
 
-def test_admin_can_read_and_update_sso_settings_stub(
+def test_admin_can_read_and_update_persisted_sso_settings(
     admin_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
 ) -> None:
-    """Admins can configure the stubbed SSO settings surface."""
-    client, _sessionmaker = admin_client
+    """Admins can configure persisted SAML or OIDC SSO settings."""
+    client, sessionmaker = admin_client
     _login(client)
 
     current = client.get("/admin/sso")
@@ -105,23 +105,45 @@ def test_admin_can_read_and_update_sso_settings_stub(
         "/admin/sso",
         json={
             "enabled": True,
-            "provider": "oidc",
-            "display_name": "Corporate IdP",
-            "issuer_url": "https://idp.example.test",
-            "client_id": "eve-client",
-            "metadata_url": "https://idp.example.test/.well-known/openid-configuration",
+            "provider": "saml",
+            "display_name": "Corporate SAML",
+            "issuer_url": "https://idp.example.test/saml",
+            "client_id": "eve-saml-sp",
+            "metadata_url": "https://idp.example.test/metadata.xml",
+            "client_secret": "super-sensitive-secret",
             "auto_provision": True,
             "default_role": "Analyst",
         },
         headers=_csrf_headers(client),
     )
+    fresh_app = create_app(
+        settings=Settings(auth_secret_key="test-signing-key", cookie_secure=False),  # noqa: S106
+        sessionmaker=sessionmaker,
+    )
+    with TestClient(fresh_app) as fresh_client:
+        _login(fresh_client)
+        persisted = fresh_client.get("/admin/sso")
+
+    async def fetch_sso_configuration() -> SsoConfiguration | None:
+        async with sessionmaker() as session:
+            return await session.get(SsoConfiguration, "default")
+
+    stored = anyio.run(fetch_sso_configuration)
 
     assert current.status_code == 200
     assert current.json()["enabled"] is False
     assert updated.status_code == 200
     assert updated.json()["enabled"] is True
-    assert updated.json()["provider"] == "oidc"
-    assert updated.json()["client_secret_configured"] is False
+    assert updated.json()["provider"] == "saml"
+    assert updated.json()["client_secret_configured"] is True
+    assert "super-sensitive-secret" not in updated.text
+    assert persisted.status_code == 200
+    assert persisted.json()["display_name"] == "Corporate SAML"
+    assert persisted.json()["client_secret_configured"] is True
+    assert stored is not None
+    assert stored.provider == "saml"
+    assert stored.encrypted_client_secret is not None
+    assert "super-sensitive-secret" not in stored.encrypted_client_secret
 
 
 def test_non_admin_user_management_denial_is_audited(

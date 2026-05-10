@@ -76,6 +76,25 @@ class UserPreference(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
+class SsoConfiguration(Base):
+    """Singleton SSO identity provider configuration."""
+
+    __tablename__ = "sso_configurations"
+
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default="default")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    provider: Mapped[str] = mapped_column(Enum("oidc", "saml", name="sso_provider"), default="oidc")
+    display_name: Mapped[str] = mapped_column(String(200), default="")
+    issuer_url: Mapped[str] = mapped_column(String(2048), default="")
+    client_id: Mapped[str] = mapped_column(String(255), default="")
+    metadata_url: Mapped[str] = mapped_column(String(2048), default="")
+    encrypted_client_secret: Mapped[str | None] = mapped_column(Text, nullable=True)
+    auto_provision: Mapped[bool] = mapped_column(Boolean, default=False)
+    default_role: Mapped[str] = mapped_column(String(120), default="Analyst")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    updated_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
 class Target(Base):
     """Asset or locator assessed by a scanner."""
 
