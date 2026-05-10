@@ -1,95 +1,138 @@
 ![CI](https://github.com/davidmcduffie001/EVE/actions/workflows/ci.yml/badge.svg)
-
-<img width="2557" height="1274" alt="brave_screenshot_localhost" src="https://github.com/user-attachments/assets/5da5f69c-d5e8-44d0-a80a-91cc28be63d5" />
+![Python](https://img.shields.io/badge/python-3.14-blue)
+![Backend](https://img.shields.io/badge/backend-FastAPI-009688)
+![Frontend](https://img.shields.io/badge/frontend-React%20%2B%20Vite-61dafb)
+![License](https://img.shields.io/badge/license-proprietary-lightgrey)
 
 # EVE
 
-EVE, the Exploit Validation Engine, is an on-premises security platform for aggregating scanner findings and enriching them with vulnerability and exploit metadata.
+EVE, the Exploit Validation Engine, is a self-hosted security operations platform for aggregating authorized scanner findings, normalizing vulnerability data, and enriching findings with metadata-only exploit intelligence.
 
-## Development Disclosure
+EVE is being built for defensive vulnerability validation workflows. It does not execute exploits, store exploit execution credentials, or provide exploit-running APIs.
 
-This project is developed with the assistance of generative AI tools. AI assistance is used for drafting, implementation, review, and documentation support; project direction, acceptance, and responsibility for use remain with the human maintainer.
+## Features
 
-## Phase 1 Scope
-
-- FastAPI backend
-- Python 3.14 runtime
-- React TypeScript frontend
-- PostgreSQL primary datastore
-- Redis for Celery, cache, token state, and rate-limit counters
-- Nessus / Tenable.sc as the first scanner connector
-- Metadata-only vulnerability enrichment and exploit intelligence
-
-Phase 1 does not include exploit execution, execution credentials, or execution-related API/data-model scaffolding.
+- Authenticated web UI for scanner finding review and account management
+- Local authentication with secure browser cookies, refresh-session revocation, and CSRF protection
+- Role-based access control with built-in and custom roles
+- Tamper-evident audit logging for authentication and administrative events
+- User profile, password, MFA status, preference, and theme controls
+- PostgreSQL-backed FastAPI service layer with Alembic migrations
+- React and Vite frontend with dark/light theme support
+- Nessus-first scanner connector direction for initial integration work
+- Planned vulnerability and exploit metadata ingestion from non-execution intelligence sources
 
 ## Repository Layout
 
-- `backend/` - FastAPI application, scanner connector interfaces, tests, and backend container definition
-- `frontend/` - Vite React application and frontend container definition
+- `backend/` - FastAPI application, persistence models, services, API routes, tests, and backend packaging
+- `frontend/` - Vite React application, UI assets, styles, and frontend tests
 - `helm/eve/` - Kubernetes deployment chart scaffold
 - `docs/` - architecture notes, integration guides, runbooks, and legal drafts
-- `.github/` - CI workflow and collaboration templates
+- `.github/` - CI workflow and GitHub collaboration templates
 
-## Current Backend Foundation
+## Requirements
 
-- Async SQLAlchemy engine/session helpers are available for FastAPI dependencies and tests.
-- Alembic contains the baseline Phase 1 schema migration.
-- Seed services initialize built-in roles plus NVD and SearchSploit metadata sources idempotently.
-- A small repository primitive supports basic async model persistence.
-- Local authentication primitives now cover password hashing, signed access tokens, and revocable refresh sessions.
-- The first auth API endpoints support login, refresh-token rotation, logout, current-user lookup, secure browser cookies, and CSRF checks for cookie-authenticated state changes.
-- RBAC has a central permission registry and reusable FastAPI dependencies for route-level permission enforcement.
-- The administrative audit-log API exposes paginated tamper-evident audit records to users with `audit:read`.
-- Authentication success/failure, refresh failures, logout, and permission denials are written to the audit log with redacted metadata and hash-chain integrity fields.
-- User settings APIs now support profile lookup/update, email changes with password confirmation, password changes with other-session revocation, and display/table preference persistence.
-- The web UI includes an account settings workspace for profile, password, dropdown-based timezone/date preferences, and MFA status controls, plus a topbar dark/light theme toggle persisted through user preferences.
-- Admin APIs now support paginated local user and role management, custom role creation/deletion, user disablement, and audit logging for administrative mutations.
+- Python 3.14
+- Node.js and npm
+- PostgreSQL for production-like deployments
+- Redis for queued work, token state, cache, and rate-limit counters in the broader deployment architecture
+
+The local development bootstrap can use SQLite for fast backend and UI iteration.
 
 ## Local Development
 
-The full development environment is specified in `SPECIFICATION.md`. Start with the backend smoke test and frontend build once dependencies are installed.
+Install backend dependencies:
 
 ```bash
 python -m pip install -e "backend[dev]"
-pytest backend
-
-cd frontend
-npm install
-npm test -- --run
-npm run build
 ```
 
-For local auth testing without PostgreSQL, bootstrap a SQLite development database and
-create the documented test admin account:
+Run backend tests:
+
+```bash
+pytest backend
+```
+
+Bootstrap the local development database:
 
 ```bash
 EVE_DATABASE_URL=sqlite+aiosqlite:///./eve-dev.sqlite3 \
   .venv/bin/python -m app.cli dev-bootstrap
 ```
 
-Then start the API on port `8001`:
+Start the API on port `8001`:
 
 ```bash
 EVE_DATABASE_URL=sqlite+aiosqlite:///./eve-dev.sqlite3 \
   .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8001
 ```
 
-Local test account:
+Install frontend dependencies:
+
+```bash
+cd frontend
+npm install
+```
+
+Run frontend checks:
+
+```bash
+npm test -- --run
+npm run build
+```
+
+Start the frontend development server on port `8000`:
+
+```bash
+npm run dev -- --host 0.0.0.0 --port 8000
+```
+
+Open the web UI at:
+
+```text
+http://localhost:8000
+```
+
+Local development account:
 
 ```text
 Email: admin@example.test
 Password: correct-password
 ```
 
-The frontend development server currently runs on port `8000`:
-
-```bash
-cd frontend
-npm run dev -- --host 0.0.0.0
-```
-
-The first-pass dashboard UI is available during local development at:
+For frontend-only preview work without a backend session, use:
 
 ```text
 http://localhost:8000/?preview=dashboard
 ```
+
+## Testing
+
+Backend:
+
+```bash
+pytest backend
+```
+
+Frontend:
+
+```bash
+cd frontend
+npm test -- --run
+npm run lint
+npm run build
+```
+
+## Security Scope
+
+EVE is intended for authorized defensive security workflows only. Scanner integrations and vulnerability intelligence features should be used only against systems where the operator has explicit permission to assess and manage findings.
+
+## Development Disclosure
+
+This project is developed with the assistance of generative AI tools. AI assistance may be used for drafting, implementation, review, and documentation support. Project direction, acceptance decisions, and responsibility for use remain with the human maintainer.
+
+## License And Copyright
+
+Copyright (c) 2026 David McDuffie. All rights reserved.
+
+No open-source license has been granted unless a separate `LICENSE` file or written agreement states otherwise.
