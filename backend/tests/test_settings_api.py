@@ -8,7 +8,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
@@ -343,14 +342,14 @@ def test_concurrent_initial_preference_reads_share_one_row(
     assert statuses == [200, 200]
 
 
-def test_preference_creation_recovers_from_duplicate_insert_race() -> None:
-    """A duplicate insert during first preference creation should re-read the row."""
+def test_preference_creation_rechecks_for_existing_row_before_insert() -> None:
+    """Preference creation re-reads before inserting while guarded by the caller lock."""
     user = User(id=uuid4(), email="admin@example.test", display_name="Admin User", role_id=uuid4())
     existing_preferences = UserPreference(user_id=user.id, timezone="UTC")
 
     class RacingPreferenceSession:
         def __init__(self) -> None:
-            self.rollback_called = False
+            self.add_called = False
             self.get_calls = 0
 
         async def get(self, _model: type[UserPreference], _key: object) -> UserPreference | None:
@@ -358,20 +357,15 @@ def test_preference_creation_recovers_from_duplicate_insert_race() -> None:
             return None if self.get_calls == 1 else existing_preferences
 
         def add(self, _preferences: UserPreference) -> None:
+            self.add_called = True
             return None
 
         async def flush(self) -> None:
-            raise IntegrityError("insert", {}, Exception("duplicate"))
-
-        async def rollback(self) -> None:
-            self.rollback_called = True
-
-        async def refresh(self, _user: User) -> None:
-            return None
+            raise AssertionError("flush should not run when the second read finds preferences")
 
     session = RacingPreferenceSession()
 
     preferences = anyio.run(_get_or_create_preferences, session, user)
 
     assert preferences is existing_preferences
-    assert session.rollback_called is True
+    assert session.add_called is False
