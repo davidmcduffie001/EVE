@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     )
     access_token_ttl_seconds: int = 900
     refresh_token_ttl_seconds: int = 60 * 60 * 24 * 30
+    access_cookie_name: str = "eve_access_token"
+    refresh_cookie_name: str = "eve_refresh_token"
+    csrf_cookie_name: str = "eve_csrf_token"
+    csrf_header_name: str = "x-csrf-token"
+    cookie_samesite: str = "strict"
 
 
 @lru_cache
