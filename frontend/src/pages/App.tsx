@@ -214,6 +214,8 @@ const permissionOptions = [
   "credentials:manage",
 ];
 
+const builtInAdminEmail = "admin@example.test";
+
 export function App({
   initialUser = null,
   initialView = "dashboard",
@@ -728,6 +730,7 @@ function AdminWorkspace({
             <tbody>
               {users.map((user) => {
                 const busy = rowState[user.id] === "saving";
+                const builtInAdminUser = user.email === builtInAdminEmail;
                 return (
                   <tr key={user.id}>
                     <td>
@@ -762,7 +765,7 @@ function AdminWorkspace({
                     </td>
                     <td>
                       <span className={`status-pill ${user.disabled ? "disabled" : "active"}`}>
-                        {user.disabled ? "Disabled" : "Active"}
+                        {builtInAdminUser ? "Built-in Admin" : user.disabled ? "Disabled" : "Active"}
                       </span>
                     </td>
                     <td>
@@ -780,7 +783,7 @@ function AdminWorkspace({
                           className="secondary-action"
                           type="button"
                           onClick={() => handleUserDisabled(user)}
-                          disabled={busy}
+                          disabled={busy || builtInAdminUser}
                         >
                           <Eye size={15} aria-hidden="true" />
                           {user.disabled ? "Enable" : "Disable"}
@@ -955,7 +958,8 @@ function SettingsWorkspace({
 
   async function handleProfileSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const formData = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const formData = new FormData(form);
     setProfileState("saving");
     try {
       const nextProfile = await fetchJson<UserProfile>("/settings/profile", {
@@ -975,7 +979,7 @@ function SettingsWorkspace({
       });
       setProfileState("idle");
       onNotify({ message: "Changes saved." });
-      event.currentTarget.reset();
+      form.reset();
     } catch {
       setProfileState("failed");
       onNotify({ message: "Unable to save changes.", tone: "error" });
@@ -984,19 +988,26 @@ function SettingsWorkspace({
 
   async function handlePasswordSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const formData = new FormData(event.currentTarget);
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    const newPassword = formData.get("new_password");
+    if (newPassword !== formData.get("confirm_new_password")) {
+      setPasswordState("idle");
+      onNotify({ message: "New passwords do not match.", tone: "error" });
+      return;
+    }
     setPasswordState("saving");
     try {
       await fetchJson<void>("/settings/password", {
         method: "PUT",
         body: JSON.stringify({
           current_password: formData.get("current_password"),
-          new_password: formData.get("new_password"),
+          new_password: newPassword,
         }),
       });
       setPasswordState("idle");
       onNotify({ message: "Changes saved." });
-      event.currentTarget.reset();
+      form.reset();
     } catch {
       setPasswordState("failed");
       onNotify({ message: "Unable to save changes.", tone: "error" });
@@ -1078,6 +1089,16 @@ function SettingsWorkspace({
           <label>
             New password
             <input name="new_password" type="password" minLength={12} autoComplete="new-password" required />
+          </label>
+          <label>
+            Confirm new password
+            <input
+              name="confirm_new_password"
+              type="password"
+              minLength={12}
+              autoComplete="new-password"
+              required
+            />
           </label>
           <button className="primary-action" type="submit" disabled={passwordState === "saving"}>
             <KeyRound size={17} aria-hidden="true" />

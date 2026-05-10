@@ -52,6 +52,24 @@ describe("App", () => {
     expect(markup).toContain("MFA");
   });
 
+  it("requires password confirmation when changing password", () => {
+    const markup = renderToString(
+      <App
+        initialView="settings"
+        initialUser={{
+          id: "user-1",
+          email: "admin@example.test",
+          display_name: "Admin User",
+          role: "Admin",
+        }}
+      />,
+    );
+
+    expect(markup).toContain('name="new_password"');
+    expect(markup).toContain('name="confirm_new_password"');
+    expect(markup).toContain("Confirm new password");
+  });
+
   it("renders administrative user and role management", () => {
     const markup = renderToString(
       <App
@@ -95,6 +113,41 @@ describe("App", () => {
     expect(markup).toContain("Create Role");
     expect(markup).toContain("admin@example.test");
     expect(markup).toContain("Triage");
+  });
+
+  it("does not allow disabling the built-in Admin user from the UI", () => {
+    const markup = renderToString(
+      <App
+        initialView="admin"
+        initialAdminUsers={[
+          {
+            id: "user-1",
+            email: "admin@example.test",
+            display_name: "Admin User",
+            role: { id: "role-1", name: "Admin" },
+            disabled: false,
+            created_at: "2026-01-01T00:00:00Z",
+          },
+        ]}
+        initialAdminRoles={[
+          {
+            id: "role-1",
+            name: "Admin",
+            is_system_role: true,
+            permissions: ["users:manage", "roles:manage"],
+          },
+        ]}
+        initialUser={{
+          id: "user-1",
+          email: "admin@example.test",
+          display_name: "Admin User",
+          role: "Admin",
+        }}
+      />,
+    );
+
+    expect(markup).toContain("Built-in Admin");
+    expect(markup).toContain("disabled=\"\"");
   });
 
   it("renders theme switching in the topbar instead of preferences", () => {

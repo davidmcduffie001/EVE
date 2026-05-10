@@ -763,7 +763,7 @@ td > select {
 
 .permission-options {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 8px 12px;
   margin: 0;
   border: 1px solid #2a383b;
@@ -782,12 +782,15 @@ td > select {
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
   color: #cbd6d9;
   font-size: 12px;
   font-weight: 700;
+  overflow-wrap: anywhere;
 }
 
 .permission-options input {
+  flex: 0 0 auto;
   width: 15px;
   height: 15px;
   accent-color: #65c5b8;
