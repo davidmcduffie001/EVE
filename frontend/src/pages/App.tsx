@@ -5,17 +5,29 @@ import {
   CheckCircle2,
   Database,
   Gauge,
+  KeyRound,
   LogOut,
   Radar,
+  Save,
   Search,
   Settings,
   ShieldCheck,
   ShieldEllipsis,
+  SlidersHorizontal,
   Siren,
   Target,
+  UserCog,
   UserRound,
 } from "lucide-react";
-import { FormEvent, FormEventHandler, useMemo, useState } from "react";
+import {
+  FormEvent,
+  FormEventHandler,
+  type Dispatch,
+  type SetStateAction,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
 import eveLogo from "../assets/eve-logo.png";
 import { getPreviewUser } from "../auth/preview";
@@ -32,17 +44,39 @@ export type AuthenticatedUser = {
 
 type AppProps = {
   initialUser?: AuthenticatedUser | null;
+  initialView?: WorkspaceView;
 };
 
 type LoginState = "idle" | "submitting" | "failed";
+type WorkspaceView = "dashboard" | "settings";
+type SaveState = "idle" | "saving" | "saved" | "failed";
 
-const navItems = [
-  { label: "Dashboard", icon: Gauge, active: true },
+type UserProfile = AuthenticatedUser & {
+  mfa_enrolled: boolean;
+  created_at: string;
+};
+
+type UserPreferences = {
+  theme_preference: "dark" | "light";
+  timezone: string;
+  date_format: string;
+  default_landing_page: string;
+  table_state: Record<string, unknown>;
+};
+
+type NavItem = {
+  label: string;
+  icon: typeof Gauge;
+  view?: WorkspaceView;
+};
+
+const navItems: NavItem[] = [
+  { label: "Dashboard", icon: Gauge, view: "dashboard" },
   { label: "Targets", icon: Target },
   { label: "Findings", icon: Siren },
   { label: "Intelligence", icon: Database },
   { label: "Scanners", icon: Radar },
-  { label: "Settings", icon: Settings },
+  { label: "Settings", icon: Settings, view: "settings" },
 ];
 
 const metrics = [
@@ -98,11 +132,12 @@ const activityFeed = [
   "Admin User refreshed the browser session.",
 ];
 
-export function App({ initialUser = null }: AppProps) {
+export function App({ initialUser = null, initialView = "dashboard" }: AppProps) {
   const [user, setUser] = useState<AuthenticatedUser | null>(
     initialUser ?? getPreviewUser(getCurrentSearch(), import.meta.env.DEV),
   );
   const [loginState, setLoginState] = useState<LoginState>("idle");
+  const [activeView, setActiveView] = useState<WorkspaceView>(initialView);
 
   const initials = useMemo(() => {
     if (!user) {
@@ -168,11 +203,17 @@ export function App({ initialUser = null }: AppProps) {
         <nav className="nav-list" aria-label="Primary navigation">
           {navItems.map((item) => {
             const Icon = item.icon;
+            const itemView: WorkspaceView = item.view ?? "dashboard";
             return (
-              <a className={item.active ? "active" : undefined} href={`#${item.label}`} key={item.label}>
+              <button
+                className={item.view && activeView === itemView ? "active" : undefined}
+                type="button"
+                onClick={() => setActiveView(itemView)}
+                key={item.label}
+              >
                 <Icon size={17} aria-hidden="true" />
                 {item.label}
-              </a>
+              </button>
             );
           })}
         </nav>
@@ -190,8 +231,12 @@ export function App({ initialUser = null }: AppProps) {
       <section className="workspace">
         <header className="topbar">
           <div>
-            <h1>Findings Dashboard</h1>
-            <p>Scanner intake, scope status, and exploit metadata triage.</p>
+            <h1>{activeView === "settings" ? "Account Settings" : "Findings Dashboard"}</h1>
+            <p>
+              {activeView === "settings"
+                ? "Manage identity, password, preferences, and authentication controls."
+                : "Scanner intake, scope status, and exploit metadata triage."}
+            </p>
           </div>
           <div className="topbar-actions">
             <label className="search-field">
@@ -201,19 +246,37 @@ export function App({ initialUser = null }: AppProps) {
             <button className="icon-button" type="button" aria-label="Notifications">
               <Bell size={18} aria-hidden="true" />
             </button>
-            <div className="user-chip">
+            <button
+              className="user-chip"
+              type="button"
+              aria-label="Open account settings"
+              onClick={() => setActiveView("settings")}
+            >
               <span>{initials}</span>
               <div>
                 <strong>{user.display_name}</strong>
                 <small>{user.role}</small>
               </div>
-            </div>
+            </button>
             <button className="icon-button" type="button" aria-label="Log out" onClick={handleLogout}>
               <LogOut size={18} aria-hidden="true" />
             </button>
           </div>
         </header>
 
+        {activeView === "settings" ? (
+          <SettingsWorkspace user={user} onUserChange={setUser} />
+        ) : (
+          <DashboardWorkspace />
+        )}
+      </section>
+    </main>
+  );
+}
+
+function DashboardWorkspace() {
+  return (
+    <>
         <section className="metrics-grid" aria-label="Environment summary">
           {metrics.map((item) => (
             <article className={`metric-card ${item.tone}`} key={item.label}>
@@ -327,9 +390,301 @@ export function App({ initialUser = null }: AppProps) {
             </table>
           </div>
         </section>
-      </section>
-    </main>
+    </>
   );
+}
+
+function SettingsWorkspace({
+  user,
+  onUserChange,
+}: {
+  user: AuthenticatedUser;
+  onUserChange: Dispatch<SetStateAction<AuthenticatedUser | null>>;
+}) {
+  const [profile, setProfile] = useState<UserProfile>({
+    ...user,
+    mfa_enrolled: false,
+    created_at: "",
+  });
+  const [preferences, setPreferences] = useState<UserPreferences>({
+    theme_preference: "dark",
+    timezone: "UTC",
+    date_format: "YYYY-MM-DD",
+    default_landing_page: "dashboard",
+    table_state: {},
+  });
+  const [profileState, setProfileState] = useState<SaveState>("idle");
+  const [passwordState, setPasswordState] = useState<SaveState>("idle");
+  const [preferenceState, setPreferenceState] = useState<SaveState>("idle");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSettings() {
+      try {
+        const [profileResponse, preferencesResponse] = await Promise.all([
+          fetchJson<UserProfile>("/settings/profile"),
+          fetchJson<UserPreferences>("/settings/preferences"),
+        ]);
+        if (!cancelled) {
+          setProfile(profileResponse);
+          setPreferences(preferencesResponse);
+          onUserChange({
+            id: profileResponse.id,
+            email: profileResponse.email,
+            display_name: profileResponse.display_name,
+            role: profileResponse.role,
+          });
+        }
+      } catch {
+        if (!cancelled) {
+          setProfileState("failed");
+        }
+      }
+    }
+
+    loadSettings();
+    return () => {
+      cancelled = true;
+    };
+  }, [onUserChange]);
+
+  async function handleProfileSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    setProfileState("saving");
+    try {
+      const nextProfile = await fetchJson<UserProfile>("/settings/profile", {
+        method: "PATCH",
+        body: JSON.stringify({
+          display_name: formData.get("display_name"),
+          email: formData.get("email"),
+          current_password: formData.get("current_password") || undefined,
+        }),
+      });
+      setProfile(nextProfile);
+      onUserChange({
+        id: nextProfile.id,
+        email: nextProfile.email,
+        display_name: nextProfile.display_name,
+        role: nextProfile.role,
+      });
+      setProfileState("saved");
+      event.currentTarget.reset();
+    } catch {
+      setProfileState("failed");
+    }
+  }
+
+  async function handlePasswordSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    setPasswordState("saving");
+    try {
+      await fetchJson<void>("/settings/password", {
+        method: "PUT",
+        body: JSON.stringify({
+          current_password: formData.get("current_password"),
+          new_password: formData.get("new_password"),
+        }),
+      });
+      setPasswordState("saved");
+      event.currentTarget.reset();
+    } catch {
+      setPasswordState("failed");
+    }
+  }
+
+  async function handlePreferencesSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    setPreferenceState("saving");
+    try {
+      const nextPreferences = await fetchJson<UserPreferences>("/settings/preferences", {
+        method: "PUT",
+        body: JSON.stringify({
+          theme_preference: formData.get("theme_preference"),
+          timezone: formData.get("timezone"),
+          date_format: formData.get("date_format"),
+          default_landing_page: formData.get("default_landing_page"),
+          table_state: preferences.table_state,
+        }),
+      });
+      setPreferences(nextPreferences);
+      setPreferenceState("saved");
+    } catch {
+      setPreferenceState("failed");
+    }
+  }
+
+  return (
+    <section className="settings-grid" aria-label="Account settings">
+      <section className="panel settings-panel">
+        <div className="panel-header">
+          <div>
+            <h2>Profile</h2>
+            <p>Update your name and account email.</p>
+          </div>
+          <UserCog size={18} aria-hidden="true" />
+        </div>
+        <form className="settings-form" onSubmit={handleProfileSubmit} key={`${profile.email}-${profile.display_name}`}>
+          <label>
+            Name
+            <input name="display_name" defaultValue={profile.display_name} required />
+          </label>
+          <label>
+            Email
+            <input name="email" type="email" defaultValue={profile.email} required />
+          </label>
+          <label>
+            Current password
+            <input
+              name="current_password"
+              type="password"
+              autoComplete="current-password"
+              placeholder="Required for email changes"
+            />
+          </label>
+          <FormStatus state={profileState} />
+          <button className="primary-action" type="submit" disabled={profileState === "saving"}>
+            <Save size={17} aria-hidden="true" />
+            Save Profile
+          </button>
+        </form>
+      </section>
+
+      <section className="panel settings-panel">
+        <div className="panel-header">
+          <div>
+            <h2>Password</h2>
+            <p>Change your password and revoke other active sessions.</p>
+          </div>
+          <KeyRound size={18} aria-hidden="true" />
+        </div>
+        <form className="settings-form" onSubmit={handlePasswordSubmit}>
+          <label>
+            Current password
+            <input name="current_password" type="password" autoComplete="current-password" required />
+          </label>
+          <label>
+            New password
+            <input name="new_password" type="password" minLength={12} autoComplete="new-password" required />
+          </label>
+          <FormStatus state={passwordState} />
+          <button className="primary-action" type="submit" disabled={passwordState === "saving"}>
+            <KeyRound size={17} aria-hidden="true" />
+            Update Password
+          </button>
+        </form>
+      </section>
+
+      <section className="panel settings-panel">
+        <div className="panel-header">
+          <div>
+            <h2>Preferences</h2>
+            <p>Set display defaults for this browser account.</p>
+          </div>
+          <SlidersHorizontal size={18} aria-hidden="true" />
+        </div>
+        <form
+          className="settings-form settings-form-inline"
+          onSubmit={handlePreferencesSubmit}
+          key={`${preferences.theme_preference}-${preferences.timezone}-${preferences.default_landing_page}`}
+        >
+          <label>
+            Theme
+            <select name="theme_preference" defaultValue={preferences.theme_preference}>
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+            </select>
+          </label>
+          <label>
+            Timezone
+            <input name="timezone" defaultValue={preferences.timezone} required />
+          </label>
+          <label>
+            Date format
+            <input name="date_format" defaultValue={preferences.date_format} required />
+          </label>
+          <label>
+            Landing page
+            <select name="default_landing_page" defaultValue={preferences.default_landing_page}>
+              <option value="dashboard">Dashboard</option>
+              <option value="findings">Findings</option>
+              <option value="settings">Settings</option>
+            </select>
+          </label>
+          <FormStatus state={preferenceState} />
+          <button className="primary-action" type="submit" disabled={preferenceState === "saving"}>
+            <Save size={17} aria-hidden="true" />
+            Save Preferences
+          </button>
+        </form>
+      </section>
+
+      <section className="panel settings-panel security-summary">
+        <div className="panel-header">
+          <div>
+            <h2>MFA</h2>
+            <p>TOTP enrollment will use this account settings area.</p>
+          </div>
+          <ShieldCheck size={18} aria-hidden="true" />
+        </div>
+        <dl className="settings-facts">
+          <div>
+            <dt>Status</dt>
+            <dd>{profile.mfa_enrolled ? "Enabled" : "Not enrolled"}</dd>
+          </div>
+          <div>
+            <dt>Role</dt>
+            <dd>{profile.role}</dd>
+          </div>
+          <div>
+            <dt>Account</dt>
+            <dd>{profile.email}</dd>
+          </div>
+        </dl>
+        <button className="secondary-action" type="button" disabled>
+          MFA Enrollment Pending
+        </button>
+      </section>
+    </section>
+  );
+}
+
+function FormStatus({ state }: { state: SaveState }) {
+  if (state === "idle") {
+    return null;
+  }
+  if (state === "saving") {
+    return <p className="form-note">Saving changes</p>;
+  }
+  if (state === "saved") {
+    return <p className="form-success">Changes saved.</p>;
+  }
+  return <p className="form-error">Unable to save changes.</p>;
+}
+
+async function fetchJson<T>(
+  path: string,
+  init: { method?: string; body?: string; headers?: Record<string, string> } = {},
+) {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...init,
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...buildAuthHeaders(),
+      ...init.headers,
+    },
+  });
+  if (!response.ok) {
+    throw new Error(`Request failed: ${response.status}`);
+  }
+  if (response.status === 204) {
+    return undefined as T;
+  }
+  return (await response.json()) as T;
 }
 
 function getCurrentSearch() {

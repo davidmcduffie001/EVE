@@ -23,7 +23,8 @@ a {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -94,19 +95,23 @@ button {
   gap: 5px;
 }
 
-.nav-list a {
+.nav-list button {
   display: flex;
   align-items: center;
   gap: 10px;
   border-radius: 8px;
+  border: 0;
+  background: transparent;
   color: #bbc7ca;
+  cursor: pointer;
   font-size: 14px;
   font-weight: 650;
   padding: 11px 12px;
+  text-align: left;
 }
 
-.nav-list a.active,
-.nav-list a:hover {
+.nav-list button.active,
+.nav-list button:hover {
   background: #1d282b;
   color: #ffffff;
 }
@@ -241,6 +246,10 @@ button {
   padding: 7px 10px 7px 7px;
 }
 
+.user-chip div {
+  min-width: 92px;
+}
+
 .user-chip > span {
   display: grid;
   place-items: center;
@@ -255,6 +264,7 @@ button {
 
 .user-chip strong {
   font-size: 13px;
+  white-space: nowrap;
 }
 
 .user-chip small {
@@ -535,7 +545,9 @@ tbody tr:hover {
   font-weight: 750;
 }
 
-.login-form input {
+.login-form input,
+.settings-form input,
+.settings-form select {
   width: 100%;
   min-height: 42px;
   border: 1px solid #2a383b;
@@ -547,8 +559,89 @@ tbody tr:hover {
 }
 
 .login-form input:focus,
+.settings-form input:focus,
+.settings-form select:focus,
 .search-field:focus-within {
   border-color: #65c5b8;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.settings-panel {
+  align-self: start;
+}
+
+.settings-form {
+  display: grid;
+  gap: 14px;
+}
+
+.settings-form-inline {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.settings-form label {
+  display: grid;
+  gap: 7px;
+  color: #cbd6d9;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.settings-form .primary-action,
+.settings-form .form-error,
+.settings-form .form-note,
+.settings-form .form-success {
+  grid-column: 1 / -1;
+}
+
+.form-note,
+.form-success {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.form-note {
+  color: #aac4ca;
+}
+
+.form-success {
+  color: #75dcc8;
+}
+
+.settings-facts {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 18px;
+}
+
+.settings-facts div {
+  display: grid;
+  grid-template-columns: 110px minmax(0, 1fr);
+  gap: 12px;
+  border-radius: 8px;
+  background: #182124;
+  padding: 11px 12px;
+}
+
+.settings-facts dt {
+  color: #93a1a5;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.settings-facts dd {
+  min-width: 0;
+  margin: 0;
+  color: #dce6e8;
+  font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .form-error {
@@ -571,6 +664,11 @@ tbody tr:hover {
 .primary-action:disabled {
   cursor: not-allowed;
   opacity: 0.66;
+}
+
+.secondary-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.68;
 }
 
 .login-preview {
@@ -626,18 +724,20 @@ tbody tr:hover {
   }
 
   .brand div,
-  .nav-list a,
+  .nav-list button,
   .scope-panel div:not(.scope-icon) {
     display: none;
   }
 
-  .nav-list a {
+  .nav-list button {
+    display: flex;
     justify-content: center;
     padding: 12px;
   }
 
   .metrics-grid,
-  .dashboard-grid {
+  .dashboard-grid,
+  .settings-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -676,6 +776,8 @@ tbody tr:hover {
 
   .metrics-grid,
   .dashboard-grid,
+  .settings-grid,
+  .settings-form-inline,
   .preview-content {
     grid-template-columns: 1fr;
   }
