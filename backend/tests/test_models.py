@@ -22,6 +22,7 @@ def test_phase_1_metadata_contains_expected_tables() -> None:
         "scans",
         "targets",
         "user_preferences",
+        "refresh_sessions",
         "users",
     }
 
@@ -45,3 +46,22 @@ def test_findings_table_has_stable_identity_columns() -> None:
     assert "service_name" in findings.c
     assert "confidence" in findings.c
     assert "assigned_to" in findings.c
+
+
+def test_users_table_has_authentication_columns() -> None:
+    """Users keep a password hash but never a plaintext credential."""
+    users = Base.metadata.tables["users"]
+
+    assert "password_hash" in users.c
+    assert "password" not in users.c
+
+
+def test_refresh_sessions_table_tracks_revocable_session_state() -> None:
+    """Refresh sessions support hashed token lookup and explicit revocation."""
+    refresh_sessions = Base.metadata.tables["refresh_sessions"]
+
+    assert "user_id" in refresh_sessions.c
+    assert "refresh_token_hash" in refresh_sessions.c
+    assert refresh_sessions.c.refresh_token_hash.unique is True
+    assert "expires_at" in refresh_sessions.c
+    assert "revoked_at" in refresh_sessions.c
