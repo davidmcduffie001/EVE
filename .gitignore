@@ -17,3 +17,8 @@ coverage/
 backend/.coverage
 frontend/.vite/
 frontend/tsconfig.tsbuildinfo
+
+# Local database files
+*.db
+*.sqlite
+*.sqlite3
