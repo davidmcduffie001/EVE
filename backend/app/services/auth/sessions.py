@@ -72,6 +72,31 @@ class RefreshSessionService:
         await self.session.flush()
         return True
 
+    async def revoke_sessions_for_user(
+        self,
+        *,
+        user_id: UUID,
+        except_refresh_token: str | None = None,
+    ) -> int:
+        """Revoke active refresh sessions for a user, optionally preserving one token."""
+        except_hash = None
+        if except_refresh_token is not None:
+            except_hash = self.hash_refresh_token(except_refresh_token)
+        statement = select(RefreshSession).where(
+            RefreshSession.user_id == user_id,
+            RefreshSession.revoked_at.is_(None),
+            RefreshSession.expires_at > datetime.now(UTC),
+        )
+        rows = (await self.session.scalars(statement)).all()
+        revoked = 0
+        for refresh_session in rows:
+            if except_hash is not None and refresh_session.refresh_token_hash == except_hash:
+                continue
+            refresh_session.revoked_at = utc_now()
+            revoked += 1
+        await self.session.flush()
+        return revoked
+
     @staticmethod
     def hash_refresh_token(refresh_token: str) -> str:
         """Create a stable lookup hash for a refresh token."""
