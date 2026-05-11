@@ -320,6 +320,7 @@ describe("App", () => {
     expect(markup).toContain("Lab OpenVAS");
     expect(markup).toContain("OpenVAS / Greenbone");
     expect(markup).toContain("Test Connection");
+    expect(markup).toContain("Sync Now");
     expect(markup).toContain("Add Scanner Integration");
     expect(markup).toContain('name="scanner_type"');
     expect(markup).toContain('name="base_url"');

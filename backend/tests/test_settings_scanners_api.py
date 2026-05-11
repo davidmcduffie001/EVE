@@ -1,5 +1,6 @@
 """Request-level tests for scanner integration settings."""
 
+from typing import Any
 from uuid import UUID, uuid4
 
 import anyio
@@ -445,3 +446,104 @@ def test_scanner_manager_can_test_greenbone_connectivity(
     assert stored is not None
     assert stored.last_sync_status == "succeeded"
     assert stored.last_sync_at is not None
+
+
+def test_scanner_manager_can_sync_greenbone_findings(
+    scanner_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scanner administrators can trigger a Greenbone sync without exposing credentials."""
+    client, sessionmaker = scanner_client
+    _login(client)
+    created = client.post(
+        "/settings/scanners",
+        json={
+            "name": "Lab OpenVAS",
+            "scanner_type": "greenbone",
+            "base_url": "tls://openvas.example.test:9390",
+            "username": "gmp-user",
+            "password": "greenbone-secret",
+            "enabled": True,
+        },
+        headers=_csrf_headers(client),
+    )
+    integration_id = created.json()["id"]
+    observed: dict[str, object] = {}
+
+    async def fake_sync(*, session: AsyncSession, integration: ScannerIntegration, client: Any):
+        observed.update(
+            {
+                "scanner_type": integration.scanner_type,
+                "base_url": client.base_url,
+                "username": client.username,
+                "password": client.password,
+            }
+        )
+        from app.services.scanners.greenbone import GreenboneSyncSummary
+
+        return GreenboneSyncSummary(scans_imported=1, findings_imported=2, results_skipped=3)
+
+    monkeypatch.setattr("app.routers.settings.sync_greenbone_integration", fake_sync)
+
+    response = client.post(
+        f"/settings/scanners/{integration_id}/sync",
+        headers=_csrf_headers(client),
+    )
+
+    async def fetch_state() -> tuple[ScannerIntegration | None, list[AuditLog]]:
+        async with sessionmaker() as session:
+            integration = await session.get(ScannerIntegration, UUID(integration_id))
+            events = (
+                await session.scalars(
+                    select(AuditLog).where(AuditLog.action == "settings.scanner_sync")
+                )
+            ).all()
+            return integration, events
+
+    stored, events = anyio.run(fetch_state)
+
+    assert response.status_code == 200
+    assert response.json()["scanner"]["last_sync_status"] == "succeeded"
+    assert response.json()["scans_imported"] == 1
+    assert response.json()["findings_imported"] == 2
+    assert response.json()["results_skipped"] == 3
+    assert observed == {
+        "scanner_type": "greenbone",
+        "base_url": "tls://openvas.example.test:9390",
+        "username": "gmp-user",
+        "password": "greenbone-secret",
+    }
+    assert "greenbone-secret" not in response.text
+    assert stored is not None
+    assert stored.last_sync_status == "succeeded"
+    assert stored.last_error is None
+    assert events[-1].outcome == "success"
+    assert events[-1].metadata_json["findings_imported"] == 2
+
+
+def test_scanner_sync_rejects_nessus_until_import_is_supported(
+    scanner_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    """Sync Now is only enabled for scanner types with implemented import support."""
+    client, _sessionmaker = scanner_client
+    _login(client)
+    created = client.post(
+        "/settings/scanners",
+        json={
+            "name": "Production Nessus",
+            "scanner_type": "nessus",
+            "base_url": "https://nessus.example.test:8834",
+            "access_key": "nessus-access-key",
+            "secret_key": "nessus-secret-key",
+            "enabled": True,
+        },
+        headers=_csrf_headers(client),
+    )
+
+    response = client.post(
+        f"/settings/scanners/{created.json()['id']}/sync",
+        headers=_csrf_headers(client),
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Scanner sync is not supported for this scanner type"
