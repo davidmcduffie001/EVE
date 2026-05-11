@@ -277,10 +277,10 @@ describe("App", () => {
     expect(markup).toContain("Validate SSO Configuration");
   });
 
-  it("renders scanner integration management for scanner administrators", () => {
+  it("renders scanner integration management on the scanners page", () => {
     const markup = renderToString(
       <App
-        initialView="admin"
+        initialView="scanners"
         initialUser={{
           id: "user-4",
           email: "scanner-admin@example.test",
@@ -311,6 +311,7 @@ describe("App", () => {
     expect(markup).toContain('name="base_url"');
     expect(markup).toContain('name="access_key"');
     expect(markup).toContain('name="secret_key"');
+    expect(markup).not.toContain("You are not authorized to view administration content.");
     expect(markup).not.toContain("SSO Configuration");
   });
 
