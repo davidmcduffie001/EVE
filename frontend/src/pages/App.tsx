@@ -66,7 +66,7 @@ type AppProps = {
 };
 
 type LoginState = "idle" | "submitting" | "failed" | "disabled" | "mfa" | "mfa-submitting";
-type WorkspaceView = "dashboard" | "settings" | "admin";
+type WorkspaceView = "dashboard" | "settings" | "admin" | "scanners";
 type SaveState = "idle" | "saving" | "saved" | "failed";
 type ThemePreference = "dark" | "light";
 type ToastTone = "success" | "error";
@@ -217,7 +217,7 @@ const navItems: NavItem[] = [
   { label: "Targets", icon: Target },
   { label: "Findings", icon: Siren },
   { label: "Intelligence", icon: Database },
-  { label: "Scanners", icon: Radar },
+  { label: "Scanners", icon: Radar, view: "scanners" },
   { label: "Administration", icon: UserCog, view: "admin" },
   { label: "Settings", icon: Settings, view: "settings" },
 ];
@@ -521,13 +521,22 @@ export function App({
     );
   }
 
-  const title = effectiveActiveView === "settings" ? "Account Settings" : effectiveActiveView === "admin" ? "Administration" : "Findings Dashboard";
+  const title =
+    effectiveActiveView === "settings"
+      ? "Account Settings"
+      : effectiveActiveView === "admin"
+        ? "Administration"
+        : effectiveActiveView === "scanners"
+          ? "Scanners"
+          : "Findings Dashboard";
   const subtitle =
     effectiveActiveView === "settings"
       ? "Manage identity, password, preferences, and authentication controls."
       : effectiveActiveView === "admin"
         ? "Manage local users, role assignments, and custom RBAC roles."
-        : "Scanner intake, scope status, and exploit metadata triage.";
+        : effectiveActiveView === "scanners"
+          ? "Manage scanner integrations, credentials, and connection checks."
+          : "Scanner intake, scope status, and exploit metadata triage.";
 
   return (
     <main className={`app-shell theme-${themePreference}`}>
@@ -625,9 +634,13 @@ export function App({
             canManageUsers={canManageUsers}
             canManageRoles={canManageRoles}
             canReadAudit={canReadAudit}
-            canManageScanners={canManageScanners}
             initialAuditLogEntries={initialAuditLogEntries}
             initialSsoSettings={initialSsoSettings}
+            onNotify={showToast}
+          />
+        ) : effectiveActiveView === "scanners" ? (
+          <ScannersWorkspace
+            canManageScanners={canManageScanners}
             initialScannerIntegrations={initialScannerIntegrations}
             onNotify={showToast}
           />
@@ -760,27 +773,241 @@ function DashboardWorkspace() {
   );
 }
 
+function ScannersWorkspace({
+  canManageScanners,
+  initialScannerIntegrations,
+  onNotify,
+}: {
+  canManageScanners: boolean;
+  initialScannerIntegrations: ScannerIntegration[];
+  onNotify: NotifyHandler;
+}) {
+  const [scannerIntegrations, setScannerIntegrations] = useState<ScannerIntegration[]>(
+    initialScannerIntegrations,
+  );
+  const [scannerState, setScannerState] = useState<SaveState>("idle");
+  const [rowState, setRowState] = useState<Record<string, SaveState>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadScannerIntegrations() {
+      if (!canManageScanners) {
+        setScannerIntegrations(initialScannerIntegrations);
+        return;
+      }
+      try {
+        const response = await fetchJson<AdminListResponse<ScannerIntegration>>("/settings/scanners");
+        if (!cancelled) {
+          setScannerIntegrations(response.items);
+        }
+      } catch {
+        if (!cancelled) {
+          onNotify({ message: "Unable to load scanner integrations.", tone: "error" });
+        }
+      }
+    }
+
+    loadScannerIntegrations();
+    return () => {
+      cancelled = true;
+    };
+  }, [canManageScanners, initialScannerIntegrations, onNotify]);
+
+  async function handleCreateScanner(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const formData = new FormData(form);
+    setScannerState("saving");
+    try {
+      const integration = await fetchJson<ScannerIntegration>("/settings/scanners", {
+        method: "POST",
+        body: JSON.stringify({
+          name: formData.get("name"),
+          scanner_type: "nessus",
+          base_url: formData.get("base_url"),
+          access_key: formData.get("access_key"),
+          secret_key: formData.get("secret_key"),
+          enabled: formData.get("enabled") === "on",
+        }),
+      });
+      setScannerIntegrations((current) => [integration, ...current]);
+      setScannerState("idle");
+      onNotify({ message: "Scanner integration added." });
+      form.reset();
+    } catch {
+      setScannerState("idle");
+      onNotify({ message: "Unable to add scanner integration.", tone: "error" });
+    }
+  }
+
+  async function handleTestScanner(integration: ScannerIntegration) {
+    setRowState((current) => ({ ...current, [integration.id]: "saving" }));
+    try {
+      const nextIntegration = await fetchJson<ScannerIntegration>(
+        `/settings/scanners/${integration.id}/test`,
+        { method: "POST" },
+      );
+      setScannerIntegrations((current) =>
+        current.map((item) => (item.id === integration.id ? nextIntegration : item)),
+      );
+      onNotify({
+        message:
+          nextIntegration.last_sync_status === "succeeded"
+            ? "Scanner connection verified."
+            : "Scanner connection failed.",
+        tone: nextIntegration.last_sync_status === "succeeded" ? "success" : "error",
+      });
+    } catch {
+      onNotify({ message: "Unable to test scanner integration.", tone: "error" });
+    } finally {
+      setRowState((current) => ({ ...current, [integration.id]: "idle" }));
+    }
+  }
+
+  async function handleDeleteScanner(integration: ScannerIntegration) {
+    setRowState((current) => ({ ...current, [integration.id]: "saving" }));
+    try {
+      await fetchJson<void>(`/settings/scanners/${integration.id}`, { method: "DELETE" });
+      setScannerIntegrations((current) => current.filter((item) => item.id !== integration.id));
+      onNotify({ message: "Scanner integration deleted." });
+    } catch {
+      onNotify({ message: "Unable to delete scanner integration.", tone: "error" });
+    } finally {
+      setRowState((current) => ({ ...current, [integration.id]: "idle" }));
+    }
+  }
+
+  if (!canManageScanners) {
+    return (
+      <section className="scanner-grid" aria-label="Scanners">
+        <section className="panel authorization-panel">
+          <div className="panel-header">
+            <div>
+              <h2>Not Authorized</h2>
+              <p>You are not authorized to manage scanner integrations.</p>
+            </div>
+            <ShieldCheck size={18} aria-hidden="true" />
+          </div>
+        </section>
+      </section>
+    );
+  }
+
+  return (
+    <section className="scanner-grid" aria-label="Scanners">
+      <section className="panel admin-scanners-panel">
+        <div className="panel-header">
+          <div>
+            <h2>Scanner Integrations</h2>
+            <p>Manage Nessus connector configuration and connection checks.</p>
+          </div>
+          <Radar size={18} aria-hidden="true" />
+        </div>
+        <div className="scanner-integration-list">
+          {scannerIntegrations.map((integration) => {
+            const busy = rowState[integration.id] === "saving";
+            return (
+              <article className="scanner-integration-card" key={integration.id}>
+                <div>
+                  <strong>{integration.name}</strong>
+                  <span>Nessus</span>
+                </div>
+                <div className="scanner-integration-meta">
+                  <span className={`status-pill ${integration.enabled ? "active" : "disabled"}`}>
+                    {integration.enabled ? "Enabled" : "Disabled"}
+                  </span>
+                  <span className={`status-pill ${integration.last_sync_status === "failed" ? "disabled" : "active"}`}>
+                    {formatScannerStatus(integration.last_sync_status)}
+                  </span>
+                  <span>{integration.last_sync_at ? formatTimestamp(integration.last_sync_at) : "Never tested"}</span>
+                  {integration.last_error ? <span>{integration.last_error}</span> : null}
+                </div>
+                <div className="table-actions">
+                  <button
+                    className="secondary-action"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => handleTestScanner(integration)}
+                  >
+                    <ShieldCheck size={15} aria-hidden="true" />
+                    Test Connection
+                  </button>
+                  <button
+                    className="secondary-action"
+                    type="button"
+                    disabled={busy}
+                    onClick={() => handleDeleteScanner(integration)}
+                  >
+                    <Trash2 size={15} aria-hidden="true" />
+                    Delete
+                  </button>
+                </div>
+              </article>
+            );
+          })}
+          {scannerIntegrations.length === 0 ? (
+            <p className="empty-state">No scanner integrations configured.</p>
+          ) : null}
+        </div>
+      </section>
+
+      <section className="panel settings-panel">
+        <div className="panel-header">
+          <div>
+            <h2>Add Nessus Integration</h2>
+            <p>Store Nessus API credentials and enable connector testing.</p>
+          </div>
+          <Plus size={18} aria-hidden="true" />
+        </div>
+        <form className="settings-form" onSubmit={handleCreateScanner}>
+          <label>
+            Name
+            <input name="name" required />
+          </label>
+          <label>
+            Base URL
+            <input name="base_url" type="url" placeholder="https://nessus.example.test:8834" required />
+          </label>
+          <label>
+            Access key
+            <input name="access_key" type="password" autoComplete="off" required />
+          </label>
+          <label>
+            Secret key
+            <input name="secret_key" type="password" autoComplete="off" required />
+          </label>
+          <label>
+            <span>Enabled</span>
+            <input name="enabled" type="checkbox" defaultChecked />
+          </label>
+          <button className="primary-action" type="submit" disabled={scannerState === "saving"}>
+            <Plus size={17} aria-hidden="true" />
+            Add Nessus Integration
+          </button>
+        </form>
+      </section>
+    </section>
+  );
+}
+
 function AdminWorkspace({
   initialUsers,
   initialRoles,
   initialAuditLogEntries,
   initialSsoSettings,
-  initialScannerIntegrations,
   canManageUsers,
   canManageRoles,
   canReadAudit,
-  canManageScanners,
   onNotify,
 }: {
   initialUsers: AdminUser[];
   initialRoles: AdminRole[];
   initialAuditLogEntries: AuditLogEntry[];
   initialSsoSettings: SsoSettings;
-  initialScannerIntegrations: ScannerIntegration[];
   canManageUsers: boolean;
   canManageRoles: boolean;
   canReadAudit: boolean;
-  canManageScanners: boolean;
   onNotify: NotifyHandler;
 }) {
   const [users, setUsers] = useState<AdminUser[]>(initialUsers);
@@ -788,14 +1015,12 @@ function AdminWorkspace({
   const [auditLogEntries, setAuditLogEntries] = useState<AuditLogEntry[]>(initialAuditLogEntries);
   const [ssoSettings, setSsoSettings] = useState<SsoSettings>(initialSsoSettings);
   const [ssoValidationResult, setSsoValidationResult] = useState<SsoValidationResult | null>(null);
-  const [scannerIntegrations, setScannerIntegrations] = useState<ScannerIntegration[]>(initialScannerIntegrations);
   const [userState, setUserState] = useState<SaveState>("idle");
   const [roleState, setRoleState] = useState<SaveState>("idle");
   const [ssoState, setSsoState] = useState<SaveState>("idle");
   const [ssoValidationState, setSsoValidationState] = useState<SaveState>("idle");
-  const [scannerState, setScannerState] = useState<SaveState>("idle");
   const [rowState, setRowState] = useState<Record<string, SaveState>>({});
-  const hasAdministrationAccess = canManageUsers || canManageRoles || canReadAudit || canManageScanners;
+  const hasAdministrationAccess = canManageUsers || canManageRoles || canReadAudit;
 
   useEffect(() => {
     let cancelled = false;
@@ -884,32 +1109,6 @@ function AdminWorkspace({
       cancelled = true;
     };
   }, [canManageRoles, initialSsoSettings, onNotify]);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    async function loadScannerIntegrations() {
-      if (!canManageScanners) {
-        setScannerIntegrations(initialScannerIntegrations);
-        return;
-      }
-      try {
-        const response = await fetchJson<AdminListResponse<ScannerIntegration>>("/settings/scanners");
-        if (!cancelled) {
-          setScannerIntegrations(response.items);
-        }
-      } catch {
-        if (!cancelled) {
-          onNotify({ message: "Unable to load scanner integrations.", tone: "error" });
-        }
-      }
-    }
-
-    loadScannerIntegrations();
-    return () => {
-      cancelled = true;
-    };
-  }, [canManageScanners, initialScannerIntegrations, onNotify]);
 
   async function handleCreateUser(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1008,70 +1207,6 @@ function AdminWorkspace({
     }
   }
 
-  async function handleCreateScanner(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    const form = event.currentTarget;
-    const formData = new FormData(form);
-    setScannerState("saving");
-    try {
-      const integration = await fetchJson<ScannerIntegration>("/settings/scanners", {
-        method: "POST",
-        body: JSON.stringify({
-          name: formData.get("name"),
-          scanner_type: "nessus",
-          base_url: formData.get("base_url"),
-          access_key: formData.get("access_key"),
-          secret_key: formData.get("secret_key"),
-          enabled: formData.get("enabled") === "on",
-        }),
-      });
-      setScannerIntegrations((current) => [integration, ...current]);
-      setScannerState("idle");
-      onNotify({ message: "Scanner integration added." });
-      form.reset();
-    } catch {
-      setScannerState("idle");
-      onNotify({ message: "Unable to add scanner integration.", tone: "error" });
-    }
-  }
-
-  async function handleTestScanner(integration: ScannerIntegration) {
-    setRowState((current) => ({ ...current, [integration.id]: "saving" }));
-    try {
-      const nextIntegration = await fetchJson<ScannerIntegration>(
-        `/settings/scanners/${integration.id}/test`,
-        { method: "POST" },
-      );
-      setScannerIntegrations((current) =>
-        current.map((item) => (item.id === integration.id ? nextIntegration : item)),
-      );
-      onNotify({
-        message:
-          nextIntegration.last_sync_status === "succeeded"
-            ? "Scanner connection verified."
-            : "Scanner connection failed.",
-        tone: nextIntegration.last_sync_status === "succeeded" ? "success" : "error",
-      });
-    } catch {
-      onNotify({ message: "Unable to test scanner integration.", tone: "error" });
-    } finally {
-      setRowState((current) => ({ ...current, [integration.id]: "idle" }));
-    }
-  }
-
-  async function handleDeleteScanner(integration: ScannerIntegration) {
-    setRowState((current) => ({ ...current, [integration.id]: "saving" }));
-    try {
-      await fetchJson<void>(`/settings/scanners/${integration.id}`, { method: "DELETE" });
-      setScannerIntegrations((current) => current.filter((item) => item.id !== integration.id));
-      onNotify({ message: "Scanner integration deleted." });
-    } catch {
-      onNotify({ message: "Unable to delete scanner integration.", tone: "error" });
-    } finally {
-      setRowState((current) => ({ ...current, [integration.id]: "idle" }));
-    }
-  }
-
   async function handleUserUpdate(user: AdminUser, form: HTMLFormElement) {
     const formData = new FormData(form);
     setRowState((current) => ({ ...current, [user.id]: "saving" }));
@@ -1160,102 +1295,6 @@ function AdminWorkspace({
             <ShieldCheck size={18} aria-hidden="true" />
           </div>
         </section>
-      ) : null}
-
-      {canManageScanners ? (
-      <section className="panel admin-scanners-panel">
-        <div className="panel-header">
-          <div>
-            <h2>Scanner Integrations</h2>
-            <p>Manage Nessus connector configuration and connection checks.</p>
-          </div>
-          <Radar size={18} aria-hidden="true" />
-        </div>
-        <div className="scanner-integration-list">
-          {scannerIntegrations.map((integration) => {
-            const busy = rowState[integration.id] === "saving";
-            return (
-              <article className="scanner-integration-card" key={integration.id}>
-                <div>
-                  <strong>{integration.name}</strong>
-                  <span>Nessus</span>
-                </div>
-                <div className="scanner-integration-meta">
-                  <span className={`status-pill ${integration.enabled ? "active" : "disabled"}`}>
-                    {integration.enabled ? "Enabled" : "Disabled"}
-                  </span>
-                  <span className={`status-pill ${integration.last_sync_status === "failed" ? "disabled" : "active"}`}>
-                    {formatScannerStatus(integration.last_sync_status)}
-                  </span>
-                  <span>{integration.last_sync_at ? formatTimestamp(integration.last_sync_at) : "Never tested"}</span>
-                  {integration.last_error ? <span>{integration.last_error}</span> : null}
-                </div>
-                <div className="table-actions">
-                  <button
-                    className="secondary-action"
-                    type="button"
-                    disabled={busy}
-                    onClick={() => handleTestScanner(integration)}
-                  >
-                    <ShieldCheck size={15} aria-hidden="true" />
-                    Test Connection
-                  </button>
-                  <button
-                    className="secondary-action"
-                    type="button"
-                    disabled={busy}
-                    onClick={() => handleDeleteScanner(integration)}
-                  >
-                    <Trash2 size={15} aria-hidden="true" />
-                    Delete
-                  </button>
-                </div>
-              </article>
-            );
-          })}
-          {scannerIntegrations.length === 0 ? (
-            <p className="empty-state">No scanner integrations configured.</p>
-          ) : null}
-        </div>
-      </section>
-      ) : null}
-
-      {canManageScanners ? (
-      <section className="panel settings-panel">
-        <div className="panel-header">
-          <div>
-            <h2>Add Nessus Integration</h2>
-            <p>Store Nessus API credentials and enable connector testing.</p>
-          </div>
-          <Plus size={18} aria-hidden="true" />
-        </div>
-        <form className="settings-form" onSubmit={handleCreateScanner}>
-          <label>
-            Name
-            <input name="name" required />
-          </label>
-          <label>
-            Base URL
-            <input name="base_url" type="url" placeholder="https://nessus.example.test:8834" required />
-          </label>
-          <label>
-            Access key
-            <input name="access_key" type="password" autoComplete="off" required />
-          </label>
-          <label>
-            Secret key
-            <input name="secret_key" type="password" autoComplete="off" required />
-          </label>
-          <label>
-            <span>Enabled</span>
-            <input name="enabled" type="checkbox" defaultChecked />
-          </label>
-          <button className="primary-action" type="submit" disabled={scannerState === "saving"}>
-            <Plus size={17} aria-hidden="true" />
-            Add Nessus Integration
-          </button>
-        </form>
-      </section>
       ) : null}
 
       {canManageUsers ? (

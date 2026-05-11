@@ -635,6 +635,13 @@ tbody tr:hover {
   align-items: start;
 }
 
+.scanner-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 16px;
+  align-items: start;
+}
+
 .admin-users-panel,
 .admin-roles-panel,
 .admin-scanners-panel,
@@ -1314,7 +1321,8 @@ td > select {
   .metrics-grid,
   .dashboard-grid,
   .settings-grid,
-  .admin-grid {
+  .admin-grid,
+  .scanner-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1355,6 +1363,7 @@ td > select {
   .dashboard-grid,
   .settings-grid,
   .admin-grid,
+  .scanner-grid,
   .settings-form-inline,
   .preview-content,
   .permission-options {
