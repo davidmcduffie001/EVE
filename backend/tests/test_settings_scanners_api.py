@@ -119,6 +119,44 @@ def test_scanner_manager_can_create_and_list_nessus_integration(
     assert "nessus-secret-key" not in stored.encrypted_credentials_ref
 
 
+def test_scanner_manager_can_create_and_list_greenbone_integration(
+    scanner_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+) -> None:
+    """Scanner administrators can create Greenbone/OpenVAS integrations without leaking secrets."""
+    client, sessionmaker = scanner_client
+    _login(client)
+
+    response = client.post(
+        "/settings/scanners",
+        json={
+            "name": "Lab OpenVAS",
+            "scanner_type": "greenbone",
+            "base_url": "tls://openvas.example.test:9390",
+            "username": "gmp-user",
+            "password": "greenbone-secret",
+            "enabled": True,
+        },
+        headers=_csrf_headers(client),
+    )
+    list_response = client.get("/settings/scanners")
+
+    async def fetch_integration() -> ScannerIntegration | None:
+        async with sessionmaker() as session:
+            return await session.scalar(select(ScannerIntegration))
+
+    stored = anyio.run(fetch_integration)
+
+    assert response.status_code == 201
+    assert response.json()["name"] == "Lab OpenVAS"
+    assert response.json()["scanner_type"] == "greenbone"
+    assert "greenbone-secret" not in response.text
+    assert list_response.status_code == 200
+    assert list_response.json()["items"][0]["scanner_type"] == "greenbone"
+    assert stored is not None
+    assert "gmp-user" not in stored.encrypted_credentials_ref
+    assert "greenbone-secret" not in stored.encrypted_credentials_ref
+
+
 def test_scanner_manager_can_update_and_delete_integration(
     scanner_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
 ) -> None:
@@ -352,3 +390,58 @@ def test_scanner_test_records_safe_failure_without_leaking_credentials(
     assert events
     assert events[-1].outcome == "failure"
     assert "nessus-secret-key" not in str(events[-1].metadata_json)
+
+
+def test_scanner_manager_can_test_greenbone_connectivity(
+    scanner_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scanner administrators can verify Greenbone GMP credentials."""
+    client, sessionmaker = scanner_client
+    _login(client)
+    created = client.post(
+        "/settings/scanners",
+        json={
+            "name": "Lab OpenVAS",
+            "scanner_type": "greenbone",
+            "base_url": "tls://openvas.example.test:9390",
+            "username": "gmp-user",
+            "password": "greenbone-secret",
+            "enabled": True,
+        },
+        headers=_csrf_headers(client),
+    )
+    integration_id = created.json()["id"]
+
+    observed: dict[str, object] = {}
+
+    async def fake_greenbone_test(*, base_url: str, username: str, password: str):
+        observed.update({"base_url": base_url, "username": username, "password": password})
+        from app.services.scanners.greenbone import GreenboneConnectivityResult
+
+        return GreenboneConnectivityResult(ok=True, reason="gmp_version_ok", error=None)
+
+    monkeypatch.setattr("app.routers.settings.test_greenbone_connectivity", fake_greenbone_test)
+
+    response = client.post(
+        f"/settings/scanners/{integration_id}/test",
+        headers=_csrf_headers(client),
+    )
+
+    async def fetch_integration() -> ScannerIntegration | None:
+        async with sessionmaker() as session:
+            return await session.get(ScannerIntegration, UUID(integration_id))
+
+    stored = anyio.run(fetch_integration)
+
+    assert response.status_code == 200
+    assert response.json()["last_sync_status"] == "succeeded"
+    assert response.json()["last_error"] is None
+    assert observed == {
+        "base_url": "tls://openvas.example.test:9390",
+        "username": "gmp-user",
+        "password": "greenbone-secret",
+    }
+    assert stored is not None
+    assert stored.last_sync_status == "succeeded"
+    assert stored.last_sync_at is not None
