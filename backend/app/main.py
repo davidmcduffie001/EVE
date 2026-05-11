@@ -9,6 +9,7 @@ from app.core.database import create_sessionmaker
 from app.core.logging import configure_logging
 from app.routers.admin import create_admin_router
 from app.routers.auth import create_auth_router
+from app.routers.findings import create_findings_router
 from app.routers.settings import create_settings_router
 
 
@@ -43,6 +44,7 @@ def create_app(
     app.include_router(create_auth_router(active_settings, active_sessionmaker))
     app.include_router(create_admin_router(active_settings, active_sessionmaker))
     app.include_router(create_settings_router(active_settings, active_sessionmaker))
+    app.include_router(create_findings_router(active_settings, active_sessionmaker))
 
     return app
 

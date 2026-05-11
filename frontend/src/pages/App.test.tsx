@@ -58,6 +58,48 @@ describe("App", () => {
     expect(markup).toContain("Admin User");
   });
 
+  it("renders backend findings on the findings page", () => {
+    const markup = renderToString(
+      <App
+        initialView="findings"
+        initialUser={{
+          id: "user-2",
+          email: "analyst@example.test",
+          display_name: "Analyst User",
+          role: "Analyst",
+          permissions: ["findings:read"],
+        }}
+        initialFindings={[
+          {
+            id: "finding-1",
+            title: "Apache httpd Unsupported Version Detection",
+            description: "Remote Apache httpd is unsupported.",
+            severity: "high",
+            status: "open",
+            confidence: "confirmed",
+            target_locator: "192.0.2.10",
+            target_type: "ip",
+            scanner_type: "greenbone",
+            scanner_finding_id: "result-1",
+            port: 443,
+            protocol: "tcp",
+            service_name: "https",
+            cve_ids: ["CVE-2025-0001"],
+            first_seen_at: "2026-05-10T08:00:00Z",
+            last_seen_at: "2026-05-10T09:00:00Z",
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Findings");
+    expect(markup).toContain("Apache httpd Unsupported Version Detection");
+    expect(markup).toContain("192.0.2.10");
+    expect(markup).toContain("CVE-2025-0001");
+    expect(markup).toContain("confirmed");
+    expect(markup).toContain("greenbone");
+  });
+
   it("renders the authenticated account settings surface", () => {
     const markup = renderToString(
       <App
