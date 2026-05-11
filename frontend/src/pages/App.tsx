@@ -1206,7 +1206,7 @@ function ScannersWorkspace({
         <div className="panel-header">
           <div>
             <h2>Add Scanner Integration</h2>
-            <p>Store scanner credentials and enable connector testing.</p>
+            <p>Use remote OpenVAS GMP endpoints such as tls://openvas.example.test:9390.</p>
           </div>
           <Plus size={18} aria-hidden="true" />
         </div>

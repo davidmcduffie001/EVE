@@ -23,6 +23,10 @@ EVE is being built for defensive vulnerability validation workflows. It does not
 - Scanner connector foundation for Nessus and OpenVAS/Greenbone GMP endpoints and imports
 - Planned vulnerability and exploit metadata ingestion from non-execution intelligence sources
 
+OpenVAS/Greenbone integrations use the Greenbone Management Protocol through `python-gvm`.
+For normal deployments, configure a remotely reachable GMP/TLS endpoint such as
+`tls://openvas.example.test:9390`; the Greenbone web UI port is not the GMP endpoint.
+
 ## Repository Layout
 
 - `backend/` - FastAPI application, persistence models, services, API routes, tests, and backend packaging

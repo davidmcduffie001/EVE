@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 import anyio
 from defusedxml import ElementTree
-from gvm.connections import TLSConnection, UnixSocketConnection
+from gvm.connections import TLSConnection
 from gvm.errors import GvmError
 from gvm.protocols.gmp import GMP
 from gvm.transforms import EtreeCheckCommandTransform
@@ -73,14 +73,7 @@ class GreenboneTlsEndpoint:
     port: int
 
 
-@dataclass(frozen=True)
-class GreenboneUnixEndpoint:
-    """Unix socket GMP endpoint."""
-
-    path: str
-
-
-GreenboneEndpoint = GreenboneTlsEndpoint | GreenboneUnixEndpoint
+GreenboneEndpoint = GreenboneTlsEndpoint
 
 
 class GreenboneGmpClient:
@@ -209,13 +202,10 @@ def _parse_greenbone_endpoint(base_url: str) -> GreenboneEndpoint | None:
     if not candidate:
         return None
     if candidate.startswith("/"):
-        return GreenboneUnixEndpoint(path=candidate)
+        return None
     if "://" not in candidate:
         candidate = f"tls://{candidate}"
     parsed = urlparse(candidate)
-    if parsed.scheme == "unix":
-        path = parsed.path or parsed.netloc
-        return GreenboneUnixEndpoint(path=path) if path else None
     if parsed.scheme not in {"tls", "gmp"}:
         return None
     if not parsed.hostname:
@@ -234,12 +224,6 @@ def _test_greenbone_connectivity_sync(
         with GMP(connection=connection, transform=transform) as gmp:
             gmp.authenticate(username, password)
             gmp.get_version()
-    except PermissionError:
-        return GreenboneConnectivityResult(
-            ok=False,
-            reason="permission_denied",
-            error="Permission denied accessing Greenbone GMP endpoint",
-        )
     except TimeoutError:
         return GreenboneConnectivityResult(
             ok=False,
@@ -262,8 +246,6 @@ def _test_greenbone_connectivity_sync(
 
 
 def _greenbone_connection(endpoint: GreenboneEndpoint, *, timeout: int | float):
-    if isinstance(endpoint, GreenboneUnixEndpoint):
-        return UnixSocketConnection(path=endpoint.path, timeout=timeout)
     return TLSConnection(hostname=endpoint.hostname, port=endpoint.port, timeout=timeout)
 
 
