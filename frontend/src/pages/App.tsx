@@ -175,7 +175,7 @@ type SsoValidationResult = {
 type ScannerIntegration = {
   id: string;
   name: string;
-  scanner_type: "nessus";
+  scanner_type: "nessus" | "greenbone";
   enabled: boolean;
   last_sync_status: string;
   last_sync_at: string | null;
@@ -787,6 +787,7 @@ function ScannersWorkspace({
   );
   const [scannerState, setScannerState] = useState<SaveState>("idle");
   const [rowState, setRowState] = useState<Record<string, SaveState>>({});
+  const [scannerType, setScannerType] = useState<ScannerIntegration["scanner_type"]>("nessus");
 
   useEffect(() => {
     let cancelled = false;
@@ -824,10 +825,12 @@ function ScannersWorkspace({
         method: "POST",
         body: JSON.stringify({
           name: formData.get("name"),
-          scanner_type: "nessus",
+          scanner_type: scannerType,
           base_url: formData.get("base_url"),
-          access_key: formData.get("access_key"),
-          secret_key: formData.get("secret_key"),
+          access_key: scannerType === "nessus" ? formData.get("access_key") : undefined,
+          secret_key: scannerType === "nessus" ? formData.get("secret_key") : undefined,
+          username: scannerType === "greenbone" ? formData.get("username") : undefined,
+          password: scannerType === "greenbone" ? formData.get("password") : undefined,
           enabled: formData.get("enabled") === "on",
         }),
       });
@@ -900,7 +903,7 @@ function ScannersWorkspace({
         <div className="panel-header">
           <div>
             <h2>Scanner Integrations</h2>
-            <p>Manage Nessus connector configuration and connection checks.</p>
+            <p>Manage scanner connector configuration and connection checks.</p>
           </div>
           <Radar size={18} aria-hidden="true" />
         </div>
@@ -911,7 +914,7 @@ function ScannersWorkspace({
               <article className="scanner-integration-card" key={integration.id}>
                 <div>
                   <strong>{integration.name}</strong>
-                  <span>Nessus</span>
+                  <span>{scannerTypeLabel(integration.scanner_type)}</span>
                 </div>
                 <div className="scanner-integration-meta">
                   <span className={`status-pill ${integration.enabled ? "active" : "disabled"}`}>
@@ -955,35 +958,72 @@ function ScannersWorkspace({
       <section className="panel settings-panel">
         <div className="panel-header">
           <div>
-            <h2>Add Nessus Integration</h2>
-            <p>Store Nessus API credentials and enable connector testing.</p>
+            <h2>Add Scanner Integration</h2>
+            <p>Store scanner credentials and enable connector testing.</p>
           </div>
           <Plus size={18} aria-hidden="true" />
         </div>
         <form className="settings-form" onSubmit={handleCreateScanner}>
           <label>
+            Scanner
+            <select
+              name="scanner_type"
+              value={scannerType}
+              onChange={(event) =>
+                setScannerType(event.currentTarget.value as ScannerIntegration["scanner_type"])
+              }
+            >
+              <option value="nessus">Nessus</option>
+              <option value="greenbone">OpenVAS / Greenbone</option>
+            </select>
+          </label>
+          <label>
             Name
             <input name="name" required />
           </label>
           <label>
-            Base URL
-            <input name="base_url" type="url" placeholder="https://nessus.example.test:8834" required />
+            {scannerType === "greenbone" ? "GMP endpoint" : "Base URL"}
+            <input
+              name="base_url"
+              type={scannerType === "greenbone" ? "text" : "url"}
+              placeholder={
+                scannerType === "greenbone"
+                  ? "tls://openvas.example.test:9390"
+                  : "https://nessus.example.test:8834"
+              }
+              required
+            />
           </label>
-          <label>
-            Access key
-            <input name="access_key" type="password" autoComplete="off" required />
-          </label>
-          <label>
-            Secret key
-            <input name="secret_key" type="password" autoComplete="off" required />
-          </label>
+          {scannerType === "greenbone" ? (
+            <>
+              <label>
+                Username
+                <input name="username" autoComplete="off" required />
+              </label>
+              <label>
+                Password
+                <input name="password" type="password" autoComplete="off" required />
+              </label>
+            </>
+          ) : (
+            <>
+              <label>
+                Access key
+                <input name="access_key" type="password" autoComplete="off" required />
+              </label>
+              <label>
+                Secret key
+                <input name="secret_key" type="password" autoComplete="off" required />
+              </label>
+            </>
+          )}
           <label>
             <span>Enabled</span>
             <input name="enabled" type="checkbox" defaultChecked />
           </label>
           <button className="primary-action" type="submit" disabled={scannerState === "saving"}>
             <Plus size={17} aria-hidden="true" />
-            Add Nessus Integration
+            Add Scanner Integration
           </button>
         </form>
       </section>
@@ -2090,6 +2130,10 @@ function formatScannerStatus(status: string) {
     .split("_")
     .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
     .join(" ");
+}
+
+function scannerTypeLabel(scannerType: ScannerIntegration["scanner_type"]) {
+  return scannerType === "greenbone" ? "OpenVAS / Greenbone" : "Nessus";
 }
 
 function hasPermission(user: AuthenticatedUser, permission: string) {

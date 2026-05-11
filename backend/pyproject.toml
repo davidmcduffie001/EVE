@@ -14,6 +14,7 @@ dependencies = [
   "pydantic==2.13.1",
   "pydantic-settings==2.13.0",
   "python-json-logger==4.1.0",
+  "python-gvm==27.1.0",
   "redis==7.4.0",
   "sqlalchemy[asyncio]==2.0.49",
   "uvicorn[standard]==0.42.0",

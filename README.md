@@ -20,7 +20,7 @@ EVE is being built for defensive vulnerability validation workflows. It does not
 - SSO configuration foundation with validated OIDC browser login and SAML service-provider metadata
 - PostgreSQL-backed FastAPI service layer with Alembic migrations
 - React and Vite frontend with dark/light theme support
-- Nessus-first scanner connector direction for initial integration work
+- Scanner connector foundation for Nessus and OpenVAS/Greenbone GMP endpoints
 - Planned vulnerability and exploit metadata ingestion from non-execution intelligence sources
 
 ## Repository Layout

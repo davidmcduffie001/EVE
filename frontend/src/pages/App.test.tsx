@@ -300,14 +300,28 @@ describe("App", () => {
             created_at: "2026-05-10T08:00:00Z",
             updated_at: "2026-05-10T08:30:00Z",
           },
+          {
+            id: "scanner-2",
+            name: "Lab OpenVAS",
+            scanner_type: "greenbone",
+            enabled: true,
+            last_sync_status: "never_run",
+            last_sync_at: null,
+            last_error: null,
+            created_at: "2026-05-10T08:00:00Z",
+            updated_at: "2026-05-10T08:30:00Z",
+          },
         ]}
       />,
     );
 
     expect(markup).toContain("Scanner Integrations");
     expect(markup).toContain("Production Nessus");
+    expect(markup).toContain("Lab OpenVAS");
+    expect(markup).toContain("OpenVAS / Greenbone");
     expect(markup).toContain("Test Connection");
-    expect(markup).toContain("Add Nessus Integration");
+    expect(markup).toContain("Add Scanner Integration");
+    expect(markup).toContain('name="scanner_type"');
     expect(markup).toContain('name="base_url"');
     expect(markup).toContain('name="access_key"');
     expect(markup).toContain('name="secret_key"');

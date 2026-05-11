@@ -13,7 +13,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
-from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
+from pydantic import AnyHttpUrl, BaseModel, Field, field_validator, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -31,6 +31,7 @@ from app.services.auth.dependencies import (
 from app.services.auth.mfa import build_totp_uri, generate_totp_secret, verify_totp_code
 from app.services.auth.security import PasswordHasher
 from app.services.auth.sessions import RefreshSessionService
+from app.services.scanners.greenbone import test_greenbone_connectivity
 
 
 class ProfileResponse(BaseModel):
@@ -125,7 +126,7 @@ class ScannerIntegrationResponse(BaseModel):
 
     id: UUID
     name: str
-    scanner_type: Literal["nessus"]
+    scanner_type: Literal["nessus", "greenbone"]
     enabled: bool
     last_sync_status: str
     last_sync_at: datetime | None
@@ -147,10 +148,12 @@ class ScannerIntegrationCreateRequest(BaseModel):
     """Create a scanner integration with initial credentials."""
 
     name: str = Field(min_length=1, max_length=200)
-    scanner_type: Literal["nessus"]
-    base_url: AnyHttpUrl
-    access_key: str = Field(min_length=1, max_length=512)
-    secret_key: str = Field(min_length=1, max_length=512)
+    scanner_type: Literal["nessus", "greenbone"]
+    base_url: str = Field(min_length=1, max_length=2048)
+    access_key: str | None = Field(default=None, min_length=1, max_length=512)
+    secret_key: str | None = Field(default=None, min_length=1, max_length=512)
+    username: str | None = Field(default=None, min_length=1, max_length=512)
+    password: str | None = Field(default=None, min_length=1, max_length=512)
     enabled: bool = True
 
     @field_validator("name")
@@ -162,14 +165,33 @@ class ScannerIntegrationCreateRequest(BaseModel):
             raise ValueError("Scanner integration name is required")
         return normalized
 
+    @field_validator("base_url")
+    @classmethod
+    def normalize_base_url(cls, value: str) -> str:
+        """Trim scanner endpoint values before persistence."""
+        return value.strip().rstrip("/")
+
+    @model_validator(mode="after")
+    def validate_scanner_credentials(self) -> ScannerIntegrationCreateRequest:
+        """Require the credential fields that match the selected scanner type."""
+        if self.scanner_type == "nessus":
+            AnyHttpUrl(str(self.base_url))
+            if self.access_key is None or self.secret_key is None:
+                raise ValueError("Nessus access key and secret key are required")
+        if self.scanner_type == "greenbone" and (self.username is None or self.password is None):
+            raise ValueError("Greenbone username and password are required")
+        return self
+
 
 class ScannerIntegrationUpdateRequest(BaseModel):
     """Update scanner integration metadata or rotate credentials."""
 
     name: str | None = Field(default=None, min_length=1, max_length=200)
-    base_url: AnyHttpUrl | None = None
+    base_url: str | None = Field(default=None, min_length=1, max_length=2048)
     access_key: str | None = Field(default=None, min_length=1, max_length=512)
     secret_key: str | None = Field(default=None, min_length=1, max_length=512)
+    username: str | None = Field(default=None, min_length=1, max_length=512)
+    password: str | None = Field(default=None, min_length=1, max_length=512)
     enabled: bool | None = None
 
     @field_validator("name")
@@ -182,6 +204,14 @@ class ScannerIntegrationUpdateRequest(BaseModel):
         if not normalized:
             raise ValueError("Scanner integration name is required")
         return normalized
+
+    @field_validator("base_url")
+    @classmethod
+    def normalize_optional_base_url(cls, value: str | None) -> str | None:
+        """Trim optional scanner endpoint values before persistence."""
+        if value is None:
+            return None
+        return value.strip().rstrip("/")
 
 
 class ScannerTestResult(BaseModel):
@@ -560,12 +590,15 @@ def create_settings_router(
         auth_user: AuthenticatedUser = scanner_manager_dependency,
         session: AsyncSession = db_session,
     ) -> ScannerIntegrationResponse:
-        """Create a Nessus scanner integration. Requires `scanners:manage`."""
+        """Create a scanner integration. Requires `scanners:manage`."""
         _validate_csrf(csrf_cookie=csrf_cookie, csrf_header=csrf_header)
         credentials = _scanner_credentials_payload(
+            scanner_type=payload.scanner_type,
             base_url=str(payload.base_url),
             access_key=payload.access_key,
             secret_key=payload.secret_key,
+            username=payload.username,
+            password=payload.password,
         )
         integration = ScannerIntegration(
             name=payload.name,
@@ -619,23 +652,38 @@ def create_settings_router(
             integration.name = payload.name
         if payload.enabled is not None:
             integration.enabled = payload.enabled
-        if any(
-            value is not None
-            for value in (payload.base_url, payload.access_key, payload.secret_key)
-        ):
-            if payload.base_url is None or payload.access_key is None or payload.secret_key is None:
+        credential_values = (
+            payload.base_url,
+            payload.access_key,
+            payload.secret_key,
+            payload.username,
+            payload.password,
+        )
+        if any(value is not None for value in credential_values):
+            required_fields = _required_scanner_credential_fields(integration.scanner_type)
+            provided = {
+                "base_url": payload.base_url,
+                "access_key": payload.access_key,
+                "secret_key": payload.secret_key,
+                "username": payload.username,
+                "password": payload.password,
+            }
+            if any(provided[field] is None for field in required_fields):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=(
-                        "Base URL, access key, and secret key are required to rotate credentials"
+                        "All credentials for this scanner type are required to rotate credentials"
                     ),
                 )
             integration.encrypted_credentials_ref = _encrypt_scanner_credentials(
                 settings=settings,
                 credentials=_scanner_credentials_payload(
+                    scanner_type=integration.scanner_type,
                     base_url=str(payload.base_url),
                     access_key=payload.access_key,
                     secret_key=payload.secret_key,
+                    username=payload.username,
+                    password=payload.password,
                 ),
             )
         integration.updated_at = utc_now()
@@ -702,16 +750,21 @@ def create_settings_router(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Scanner integration not found",
             )
-        if integration.scanner_type != "nessus":
+        if integration.scanner_type == "nessus":
+            test_result = await _test_nessus_connectivity(
+                settings=settings,
+                integration=integration,
+            )
+        elif integration.scanner_type == "greenbone":
+            test_result = await _test_greenbone_scanner_connectivity(
+                settings=settings,
+                integration=integration,
+            )
+        else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Scanner type is not supported for connectivity testing",
             )
-
-        test_result = await _test_nessus_connectivity(
-            settings=settings,
-            integration=integration,
-        )
         integration.last_sync_status = "succeeded" if test_result.ok else "failed"
         integration.last_sync_at = utc_now()
         integration.last_error = None if test_result.ok else test_result.error
@@ -813,15 +866,30 @@ def _serialize_scanner_integration(
 
 def _scanner_credentials_payload(
     *,
+    scanner_type: str,
     base_url: str,
-    access_key: str,
-    secret_key: str,
+    access_key: str | None,
+    secret_key: str | None,
+    username: str | None,
+    password: str | None,
 ) -> dict[str, str]:
+    if scanner_type == "greenbone":
+        return {
+            "base_url": base_url.rstrip("/"),
+            "username": str(username),
+            "password": str(password),
+        }
     return {
         "base_url": base_url.rstrip("/"),
-        "access_key": access_key,
-        "secret_key": secret_key,
+        "access_key": str(access_key),
+        "secret_key": str(secret_key),
     }
+
+
+def _required_scanner_credential_fields(scanner_type: str) -> tuple[str, ...]:
+    if scanner_type == "greenbone":
+        return ("base_url", "username", "password")
+    return ("base_url", "access_key", "secret_key")
 
 
 def _encrypt_scanner_credentials(
@@ -859,11 +927,7 @@ def _decrypt_scanner_credentials(
     credentials = json.loads(plaintext.decode("utf-8"))
     if not isinstance(credentials, dict):
         raise ValueError("Scanner credentials payload is invalid")
-    return {
-        "base_url": str(credentials["base_url"]),
-        "access_key": str(credentials["access_key"]),
-        "secret_key": str(credentials["secret_key"]),
-    }
+    return {str(key): str(value) for key, value in credentials.items()}
 
 
 async def _test_nessus_connectivity(
@@ -919,6 +983,31 @@ async def _test_nessus_connectivity(
             error=f"Nessus scanner returned HTTP {response.status_code}",
         )
     return ScannerTestResult(ok=True, reason="ready")
+
+
+async def _test_greenbone_scanner_connectivity(
+    *,
+    settings: Settings,
+    integration: ScannerIntegration,
+) -> ScannerTestResult:
+    try:
+        credentials = _decrypt_scanner_credentials(settings=settings, integration=integration)
+        base_url = credentials["base_url"]
+        username = credentials["username"]
+        password = credentials["password"]
+    except (ValueError, KeyError, json.JSONDecodeError, UnicodeDecodeError):
+        return ScannerTestResult(
+            ok=False,
+            reason="invalid_credentials",
+            error="Stored scanner credentials are invalid",
+        )
+
+    result = await test_greenbone_connectivity(
+        base_url=base_url,
+        username=username,
+        password=password,
+    )
+    return ScannerTestResult(ok=result.ok, reason=result.reason, error=result.error)
 
 
 def _host_from_url(value: str) -> str:
