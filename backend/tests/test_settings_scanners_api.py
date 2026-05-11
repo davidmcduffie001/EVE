@@ -1,10 +1,12 @@
 """Request-level tests for scanner integration settings."""
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import anyio
 import pytest
 from fastapi.testclient import TestClient
+from httpx import ConnectError, Request
+from httpx import Response as HttpxResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -227,3 +229,126 @@ def test_scanner_create_audit_log_omits_credentials(
     assert event.metadata_json["scanner_type"] == "nessus"
     assert "nessus-access-key" not in str(event.metadata_json)
     assert "nessus-secret-key" not in str(event.metadata_json)
+
+
+def test_scanner_manager_can_test_nessus_connectivity(
+    scanner_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scanner administrators can verify stored Nessus credentials without exposing them."""
+    client, sessionmaker = scanner_client
+    _login(client)
+    created = client.post(
+        "/settings/scanners",
+        json={
+            "name": "Production Nessus",
+            "scanner_type": "nessus",
+            "base_url": "https://nessus.example.test:8834",
+            "access_key": "nessus-access-key",
+            "secret_key": "nessus-secret-key",
+            "enabled": True,
+        },
+        headers=_csrf_headers(client),
+    )
+    integration_id = created.json()["id"]
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: float, verify: bool) -> None:
+            self.timeout = timeout
+            self.verify = verify
+
+        async def __aenter__(self) -> FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, url: str, *, headers: dict[str, str]) -> HttpxResponse:
+            assert url == "https://nessus.example.test:8834/server/status"
+            assert headers == {
+                "X-ApiKeys": "accessKey=nessus-access-key; secretKey=nessus-secret-key"
+            }
+            return HttpxResponse(200, json={"status": "ready"})
+
+    monkeypatch.setattr("app.routers.settings.httpx.AsyncClient", FakeAsyncClient)
+
+    response = client.post(
+        f"/settings/scanners/{integration_id}/test",
+        headers=_csrf_headers(client),
+    )
+
+    async def fetch_integration() -> ScannerIntegration | None:
+        async with sessionmaker() as session:
+            return await session.get(ScannerIntegration, UUID(integration_id))
+
+    stored = anyio.run(fetch_integration)
+
+    assert response.status_code == 200
+    assert response.json()["last_sync_status"] == "succeeded"
+    assert response.json()["last_error"] is None
+    assert "nessus-secret-key" not in response.text
+    assert stored is not None
+    assert stored.last_sync_status == "succeeded"
+    assert stored.last_sync_at is not None
+
+
+def test_scanner_test_records_safe_failure_without_leaking_credentials(
+    scanner_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Nessus test failures are stored as safe status text without raw credential values."""
+    client, sessionmaker = scanner_client
+    _login(client)
+    created = client.post(
+        "/settings/scanners",
+        json={
+            "name": "Production Nessus",
+            "scanner_type": "nessus",
+            "base_url": "https://nessus.example.test:8834",
+            "access_key": "nessus-access-key",
+            "secret_key": "nessus-secret-key",
+            "enabled": True,
+        },
+        headers=_csrf_headers(client),
+    )
+    integration_id = created.json()["id"]
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: float, verify: bool) -> None:
+            self.timeout = timeout
+            self.verify = verify
+
+        async def __aenter__(self) -> FakeAsyncClient:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+        async def get(self, url: str, *, headers: dict[str, str]) -> HttpxResponse:
+            request = Request("GET", url, headers=headers)
+            raise ConnectError("connect failed for nessus-secret-key", request=request)
+
+    monkeypatch.setattr("app.routers.settings.httpx.AsyncClient", FakeAsyncClient)
+
+    response = client.post(
+        f"/settings/scanners/{integration_id}/test",
+        headers=_csrf_headers(client),
+    )
+
+    async def fetch_events() -> list[AuditLog]:
+        async with sessionmaker() as session:
+            return (
+                await session.scalars(
+                    select(AuditLog).where(AuditLog.action == "settings.scanner_test")
+                )
+            ).all()
+
+    events = anyio.run(fetch_events)
+
+    assert response.status_code == 200
+    assert response.json()["last_sync_status"] == "failed"
+    assert response.json()["last_error"] == "Unable to connect to Nessus scanner"
+    assert "nessus-secret-key" not in response.text
+    assert events
+    assert events[-1].outcome == "failure"
+    assert "nessus-secret-key" not in str(events[-1].metadata_json)
