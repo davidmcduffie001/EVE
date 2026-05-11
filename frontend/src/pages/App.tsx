@@ -11,6 +11,7 @@ import {
   Moon,
   Plus,
   Radar,
+  RefreshCw,
   Save,
   Search,
   Settings,
@@ -182,6 +183,13 @@ type ScannerIntegration = {
   last_error: string | null;
   created_at: string;
   updated_at: string;
+};
+
+type ScannerSyncResponse = {
+  scanner: ScannerIntegration;
+  scans_imported: number;
+  findings_imported: number;
+  results_skipped: number;
 };
 
 const emptyAdminUsers: AdminUser[] = [];
@@ -868,6 +876,26 @@ function ScannersWorkspace({
     }
   }
 
+  async function handleSyncScanner(integration: ScannerIntegration) {
+    setRowState((current) => ({ ...current, [integration.id]: "saving" }));
+    try {
+      const response = await fetchJson<ScannerSyncResponse>(
+        `/settings/scanners/${integration.id}/sync`,
+        { method: "POST" },
+      );
+      setScannerIntegrations((current) =>
+        current.map((item) => (item.id === integration.id ? response.scanner : item)),
+      );
+      onNotify({
+        message: `Scanner sync imported ${response.findings_imported} findings from ${response.scans_imported} scans.`,
+      });
+    } catch {
+      onNotify({ message: "Unable to sync scanner integration.", tone: "error" });
+    } finally {
+      setRowState((current) => ({ ...current, [integration.id]: "idle" }));
+    }
+  }
+
   async function handleDeleteScanner(integration: ScannerIntegration) {
     setRowState((current) => ({ ...current, [integration.id]: "saving" }));
     try {
@@ -936,6 +964,17 @@ function ScannersWorkspace({
                     <ShieldCheck size={15} aria-hidden="true" />
                     Test Connection
                   </button>
+                  {integration.scanner_type === "greenbone" ? (
+                    <button
+                      className="secondary-action"
+                      type="button"
+                      disabled={busy}
+                      onClick={() => handleSyncScanner(integration)}
+                    >
+                      <RefreshCw size={15} aria-hidden="true" />
+                      Sync Now
+                    </button>
+                  ) : null}
                   <button
                     className="secondary-action"
                     type="button"

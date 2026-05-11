@@ -31,7 +31,11 @@ from app.services.auth.dependencies import (
 from app.services.auth.mfa import build_totp_uri, generate_totp_secret, verify_totp_code
 from app.services.auth.security import PasswordHasher
 from app.services.auth.sessions import RefreshSessionService
-from app.services.scanners.greenbone import test_greenbone_connectivity
+from app.services.scanners.greenbone import (
+    GreenboneGmpClient,
+    sync_greenbone_integration,
+    test_greenbone_connectivity,
+)
 
 
 class ProfileResponse(BaseModel):
@@ -142,6 +146,15 @@ class ScannerIntegrationListResponse(BaseModel):
     page: int
     page_size: int
     total: int
+
+
+class ScannerSyncResponse(BaseModel):
+    """Scanner sync result safe to return to browsers."""
+
+    scanner: ScannerIntegrationResponse
+    scans_imported: int
+    findings_imported: int
+    results_skipped: int
 
 
 class ScannerIntegrationCreateRequest(BaseModel):
@@ -785,6 +798,123 @@ def create_settings_router(
         )
         await session.commit()
         return _serialize_scanner_integration(integration)
+
+    @router.post("/scanners/{integration_id}/sync", response_model=ScannerSyncResponse)
+    async def sync_scanner_integration(
+        integration_id: UUID,
+        http_request: Request,
+        csrf_cookie: str | None = Cookie(default=None, alias=settings.csrf_cookie_name),
+        csrf_header: str | None = Header(default=None, alias=settings.csrf_header_name),
+        auth_user: AuthenticatedUser = scanner_manager_dependency,
+        session: AsyncSession = db_session,
+    ) -> ScannerSyncResponse:
+        """Synchronize findings from a configured scanner. Requires `scanners:manage`."""
+        _validate_csrf(csrf_cookie=csrf_cookie, csrf_header=csrf_header)
+        integration = await session.get(ScannerIntegration, integration_id)
+        if integration is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Scanner integration not found",
+            )
+        if not integration.enabled:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Scanner integration is disabled",
+            )
+        if integration.scanner_type != "greenbone":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Scanner sync is not supported for this scanner type",
+            )
+
+        try:
+            credentials = _decrypt_scanner_credentials(settings=settings, integration=integration)
+            client = GreenboneGmpClient(
+                base_url=credentials["base_url"],
+                username=credentials["username"],
+                password=credentials["password"],
+            )
+        except (ValueError, KeyError, json.JSONDecodeError, UnicodeDecodeError):
+            integration.last_sync_status = "failed"
+            integration.last_sync_at = utc_now()
+            integration.last_error = "Stored scanner credentials are invalid"
+            integration.updated_at = utc_now()
+            await _record_settings_event(
+                session=session,
+                http_request=http_request,
+                user=auth_user,
+                action="settings.scanner_sync",
+                outcome="failure",
+                resource_type="scanner_integration",
+                resource_id=str(integration.id),
+                metadata={
+                    "scanner_type": integration.scanner_type,
+                    "reason": "invalid_credentials",
+                },
+            )
+            await session.commit()
+            return ScannerSyncResponse(
+                scanner=_serialize_scanner_integration(integration),
+                scans_imported=0,
+                findings_imported=0,
+                results_skipped=0,
+            )
+
+        try:
+            summary = await sync_greenbone_integration(
+                session=session,
+                integration=integration,
+                client=client,
+            )
+        except Exception:
+            integration.last_sync_status = "failed"
+            integration.last_sync_at = utc_now()
+            integration.last_error = "Scanner sync failed"
+            integration.updated_at = utc_now()
+            await _record_settings_event(
+                session=session,
+                http_request=http_request,
+                user=auth_user,
+                action="settings.scanner_sync",
+                outcome="failure",
+                resource_type="scanner_integration",
+                resource_id=str(integration.id),
+                metadata={"scanner_type": integration.scanner_type, "reason": "sync_failed"},
+            )
+            await session.commit()
+            return ScannerSyncResponse(
+                scanner=_serialize_scanner_integration(integration),
+                scans_imported=0,
+                findings_imported=0,
+                results_skipped=0,
+            )
+
+        integration.last_sync_status = "succeeded"
+        integration.last_sync_at = utc_now()
+        integration.last_error = None
+        integration.updated_at = utc_now()
+        await _record_settings_event(
+            session=session,
+            http_request=http_request,
+            user=auth_user,
+            action="settings.scanner_sync",
+            outcome="success",
+            resource_type="scanner_integration",
+            resource_id=str(integration.id),
+            metadata={
+                "scanner_type": integration.scanner_type,
+                "scans_imported": summary.scans_imported,
+                "findings_imported": summary.findings_imported,
+                "results_skipped": summary.results_skipped,
+            },
+        )
+        await session.commit()
+        return ScannerSyncResponse(
+            scanner=_serialize_scanner_integration(integration),
+            scans_imported=summary.scans_imported,
+            findings_imported=summary.findings_imported,
+            results_skipped=summary.results_skipped,
+        )
 
     return router
 
