@@ -385,6 +385,7 @@ describe("App", () => {
     expect(markup).toContain("OpenVAS / Greenbone");
     expect(markup).toContain("Test Connection");
     expect(markup).toContain("Sync Now");
+    expect(markup).toContain("tls://openvas.example.test:9390");
     expect(markup).toContain("Recent Syncs");
     expect(markup).toContain("2 findings");
     expect(markup).toContain("1 scan");

@@ -9,14 +9,11 @@ from app.core.database import create_sessionmaker
 from app.models.base import Base, Finding, Role, Scan, ScannerIntegration, Target, User
 from app.services.auth.security import PasswordHasher
 from app.services.scanners.greenbone import (
-    GreenboneConnectivityResult,
     GreenboneGmpClient,
     GreenboneResult,
     GreenboneTask,
     GreenboneTlsEndpoint,
-    GreenboneUnixEndpoint,
     _parse_greenbone_endpoint,
-    _test_greenbone_connectivity_sync,
     sync_greenbone_integration,
     sync_greenbone_scan_results,
 )
@@ -80,45 +77,13 @@ def test_greenbone_client_parses_tasks_and_results_from_gmp_xml() -> None:
     ]
 
 
-def test_greenbone_endpoint_parser_supports_unix_sockets() -> None:
-    """Local Greenbone installs commonly expose GMP through a Unix socket."""
-    assert _parse_greenbone_endpoint("unix:///run/gvmd/gvmd.sock") == GreenboneUnixEndpoint(
-        path="/run/gvmd/gvmd.sock"
-    )
-    assert _parse_greenbone_endpoint("/run/gvmd/gvmd.sock") == GreenboneUnixEndpoint(
-        path="/run/gvmd/gvmd.sock"
-    )
+def test_greenbone_endpoint_parser_requires_remote_gmp_endpoint() -> None:
+    """EVE only supports remotely reachable Greenbone GMP endpoints."""
+    assert _parse_greenbone_endpoint("unix:///run/gvmd/gvmd.sock") is None
+    assert _parse_greenbone_endpoint("/run/gvmd/gvmd.sock") is None
     assert _parse_greenbone_endpoint("tls://127.0.0.1:9390") == GreenboneTlsEndpoint(
         hostname="127.0.0.1",
         port=9390,
-    )
-
-
-def test_greenbone_connectivity_reports_socket_permission_errors(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Unix socket permission failures produce a specific operator-facing error."""
-
-    class FakeGmp:
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            pass
-
-        def __enter__(self) -> FakeGmp:
-            raise PermissionError("permission denied")
-
-        def __exit__(self, *args: object) -> None:
-            return None
-
-    monkeypatch.setattr("app.services.scanners.greenbone.GMP", FakeGmp)
-
-    assert _test_greenbone_connectivity_sync(
-        GreenboneUnixEndpoint(path="/run/gvmd/gvmd.sock"),
-        "admin",
-        "secret",
-    ) == GreenboneConnectivityResult(
-        ok=False,
-        reason="permission_denied",
-        error="Permission denied accessing Greenbone GMP endpoint",
     )
 
 
