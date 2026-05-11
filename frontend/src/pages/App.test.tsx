@@ -277,6 +277,43 @@ describe("App", () => {
     expect(markup).toContain("Validate SSO Configuration");
   });
 
+  it("renders scanner integration management for scanner administrators", () => {
+    const markup = renderToString(
+      <App
+        initialView="admin"
+        initialUser={{
+          id: "user-4",
+          email: "scanner-admin@example.test",
+          display_name: "Scanner Admin",
+          role: "Scanner Manager",
+          permissions: ["scanners:manage"],
+        }}
+        initialScannerIntegrations={[
+          {
+            id: "scanner-1",
+            name: "Production Nessus",
+            scanner_type: "nessus",
+            enabled: true,
+            last_sync_status: "succeeded",
+            last_sync_at: "2026-05-10T08:30:00Z",
+            last_error: null,
+            created_at: "2026-05-10T08:00:00Z",
+            updated_at: "2026-05-10T08:30:00Z",
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain("Scanner Integrations");
+    expect(markup).toContain("Production Nessus");
+    expect(markup).toContain("Test Connection");
+    expect(markup).toContain("Add Nessus Integration");
+    expect(markup).toContain('name="base_url"');
+    expect(markup).toContain('name="access_key"');
+    expect(markup).toContain('name="secret_key"');
+    expect(markup).not.toContain("SSO Configuration");
+  });
+
   it("renders the audit log beneath administration controls for audit readers", () => {
     const markup = renderToString(
       <App

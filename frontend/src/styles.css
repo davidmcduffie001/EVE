@@ -637,12 +637,14 @@ tbody tr:hover {
 
 .admin-users-panel,
 .admin-roles-panel,
+.admin-scanners-panel,
 .audit-log-panel {
   padding: 0;
 }
 
 .admin-users-panel .panel-header,
 .admin-roles-panel .panel-header,
+.admin-scanners-panel .panel-header,
 .audit-log-panel .panel-header {
   margin: 0;
   padding: 18px;
@@ -756,6 +758,48 @@ td > select {
   display: grid;
   gap: 12px;
   padding: 0 18px 18px;
+}
+
+.scanner-integration-list {
+  display: grid;
+  gap: 12px;
+  padding: 0 18px 18px;
+}
+
+.scanner-integration-card {
+  display: grid;
+  gap: 12px;
+  border: 1px solid #263337;
+  border-radius: 8px;
+  background: #101719;
+  padding: 14px;
+}
+
+.scanner-integration-card strong,
+.scanner-integration-card span {
+  display: block;
+}
+
+.scanner-integration-card strong {
+  color: #f0f6f7;
+}
+
+.scanner-integration-card span {
+  color: #9eb3b9;
+  font-size: 13px;
+}
+
+.scanner-integration-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.empty-state {
+  margin: 0;
+  color: #9eb3b9;
+  font-size: 13px;
 }
 
 .role-card {
@@ -1073,9 +1117,19 @@ td > select {
 .theme-light .settings-facts div,
 .theme-light .connector-steps li,
 .theme-light .activity-list li,
-.theme-light .role-card {
+.theme-light .role-card,
+.theme-light .scanner-integration-card {
   background: #f3f8f8;
   color: #1c2a2e;
+}
+
+.theme-light .scanner-integration-card strong {
+  color: #172124;
+}
+
+.theme-light .scanner-integration-card span,
+.theme-light .empty-state {
+  color: #41565c;
 }
 
 .theme-light tbody tr:hover {
