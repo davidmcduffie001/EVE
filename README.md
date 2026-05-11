@@ -4,6 +4,8 @@
 ![Frontend](https://img.shields.io/badge/frontend-React%20%2B%20Vite-61dafb)
 ![License](https://img.shields.io/badge/license-proprietary-lightgrey)
 
+![EVE dashboard mockup](docs/assets/dashboard.png)
+
 # EVE
 
 EVE, the Exploit Validation Engine, is a self-hosted security operations platform for aggregating authorized scanner findings, normalizing vulnerability data, and enriching findings with metadata-only exploit intelligence.
