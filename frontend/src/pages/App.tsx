@@ -64,6 +64,7 @@ type AppProps = {
   initialSsoSettings?: SsoSettings;
   initialSsoStatus?: SsoStatus;
   initialScannerIntegrations?: ScannerIntegration[];
+  initialScannerSyncHistory?: Record<string, ScannerSyncHistoryEntry[]>;
 };
 
 type LoginState = "idle" | "submitting" | "failed" | "disabled" | "mfa" | "mfa-submitting";
@@ -190,6 +191,23 @@ type ScannerSyncResponse = {
   scans_imported: number;
   findings_imported: number;
   results_skipped: number;
+};
+
+type ScannerSyncHistoryEntry = {
+  id: string;
+  occurred_at: string;
+  outcome: "success" | "failure" | string;
+  scans_imported: number;
+  findings_imported: number;
+  results_skipped: number;
+  reason: string | null;
+};
+
+type ScannerSyncHistoryResponse = {
+  items: ScannerSyncHistoryEntry[];
+  page: number;
+  page_size: number;
+  total: number;
 };
 
 const emptyAdminUsers: AdminUser[] = [];
@@ -330,6 +348,7 @@ export function App({
   initialSsoSettings = defaultSsoSettings,
   initialSsoStatus = defaultSsoStatus,
   initialScannerIntegrations = emptyScannerIntegrations,
+  initialScannerSyncHistory = {},
 }: AppProps) {
   const [user, setUser] = useState<AuthenticatedUser | null>(
     initialUser ?? getPreviewUser(getCurrentSearch(), import.meta.env.DEV),
@@ -650,6 +669,7 @@ export function App({
           <ScannersWorkspace
             canManageScanners={canManageScanners}
             initialScannerIntegrations={initialScannerIntegrations}
+            initialScannerSyncHistory={initialScannerSyncHistory}
             onNotify={showToast}
           />
         ) : (
@@ -784,10 +804,12 @@ function DashboardWorkspace() {
 function ScannersWorkspace({
   canManageScanners,
   initialScannerIntegrations,
+  initialScannerSyncHistory,
   onNotify,
 }: {
   canManageScanners: boolean;
   initialScannerIntegrations: ScannerIntegration[];
+  initialScannerSyncHistory: Record<string, ScannerSyncHistoryEntry[]>;
   onNotify: NotifyHandler;
 }) {
   const [scannerIntegrations, setScannerIntegrations] = useState<ScannerIntegration[]>(
@@ -795,6 +817,9 @@ function ScannersWorkspace({
   );
   const [scannerState, setScannerState] = useState<SaveState>("idle");
   const [rowState, setRowState] = useState<Record<string, SaveState>>({});
+  const [scannerSyncHistory, setScannerSyncHistory] = useState<
+    Record<string, ScannerSyncHistoryEntry[]>
+  >(initialScannerSyncHistory);
   const [scannerType, setScannerType] = useState<ScannerIntegration["scanner_type"]>("nessus");
 
   useEffect(() => {
@@ -822,6 +847,42 @@ function ScannersWorkspace({
       cancelled = true;
     };
   }, [canManageScanners, initialScannerIntegrations, onNotify]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSyncHistory() {
+      if (!canManageScanners || scannerIntegrations.length === 0) {
+        return;
+      }
+      const greenboneIntegrations = scannerIntegrations.filter(
+        (integration) => integration.scanner_type === "greenbone",
+      );
+      if (greenboneIntegrations.length === 0) {
+        return;
+      }
+      const entries = await Promise.all(
+        greenboneIntegrations.map(async (integration) => {
+          try {
+            const response = await fetchJson<ScannerSyncHistoryResponse>(
+              `/settings/scanners/${integration.id}/sync-history`,
+            );
+            return [integration.id, response.items] as const;
+          } catch {
+            return [integration.id, []] as const;
+          }
+        }),
+      );
+      if (!cancelled) {
+        setScannerSyncHistory((current) => ({ ...current, ...Object.fromEntries(entries) }));
+      }
+    }
+
+    loadSyncHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [canManageScanners, scannerIntegrations]);
 
   async function handleCreateScanner(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -886,6 +947,7 @@ function ScannersWorkspace({
       setScannerIntegrations((current) =>
         current.map((item) => (item.id === integration.id ? response.scanner : item)),
       );
+      await loadSingleScannerSyncHistory(response.scanner.id);
       onNotify({
         message: `Scanner sync imported ${response.findings_imported} findings from ${response.scans_imported} scans.`,
       });
@@ -893,6 +955,17 @@ function ScannersWorkspace({
       onNotify({ message: "Unable to sync scanner integration.", tone: "error" });
     } finally {
       setRowState((current) => ({ ...current, [integration.id]: "idle" }));
+    }
+  }
+
+  async function loadSingleScannerSyncHistory(integrationId: string) {
+    try {
+      const response = await fetchJson<ScannerSyncHistoryResponse>(
+        `/settings/scanners/${integrationId}/sync-history`,
+      );
+      setScannerSyncHistory((current) => ({ ...current, [integrationId]: response.items }));
+    } catch {
+      onNotify({ message: "Unable to load scanner sync history.", tone: "error" });
     }
   }
 
@@ -985,6 +1058,11 @@ function ScannersWorkspace({
                     Delete
                   </button>
                 </div>
+                {integration.scanner_type === "greenbone" ? (
+                  <ScannerSyncHistoryList
+                    entries={scannerSyncHistory[integration.id] ?? []}
+                  />
+                ) : null}
               </article>
             );
           })}
@@ -1066,6 +1144,32 @@ function ScannersWorkspace({
           </button>
         </form>
       </section>
+    </section>
+  );
+}
+
+function ScannerSyncHistoryList({ entries }: { entries: ScannerSyncHistoryEntry[] }) {
+  return (
+    <section className="scanner-sync-history" aria-label="Recent scanner syncs">
+      <strong>Recent Syncs</strong>
+      {entries.length === 0 ? (
+        <span>No sync history yet.</span>
+      ) : (
+        <ul>
+          {entries.slice(0, 3).map((entry) => (
+            <li key={entry.id}>
+              <span className={`status-pill ${entry.outcome === "success" ? "active" : "disabled"}`}>
+                {entry.outcome === "success" ? "Succeeded" : "Failed"}
+              </span>
+              <span>{formatTimestamp(entry.occurred_at)}</span>
+              <span>{`${entry.findings_imported} ${entry.findings_imported === 1 ? "finding" : "findings"}`}</span>
+              <span>{`${entry.scans_imported} ${entry.scans_imported === 1 ? "scan" : "scans"}`}</span>
+              {entry.results_skipped > 0 ? <span>{entry.results_skipped} skipped</span> : null}
+              {entry.reason ? <span>{formatScannerStatus(entry.reason)}</span> : null}
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }

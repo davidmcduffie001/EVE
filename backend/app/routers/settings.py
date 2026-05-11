@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings
 from app.core.database import get_db_session
-from app.models.base import ScannerIntegration, User, UserPreference, utc_now
+from app.models.base import AuditLog, ScannerIntegration, User, UserPreference, utc_now
 from app.services.audit import AuditLogService
 from app.services.auth.dependencies import (
     AuthenticatedUser,
@@ -155,6 +155,27 @@ class ScannerSyncResponse(BaseModel):
     scans_imported: int
     findings_imported: int
     results_skipped: int
+
+
+class ScannerSyncHistoryEntryResponse(BaseModel):
+    """A single scanner sync history event."""
+
+    id: UUID
+    occurred_at: datetime
+    outcome: str
+    scans_imported: int
+    findings_imported: int
+    results_skipped: int
+    reason: str | None
+
+
+class ScannerSyncHistoryResponse(BaseModel):
+    """Paginated scanner sync history response envelope."""
+
+    items: list[ScannerSyncHistoryEntryResponse]
+    page: int
+    page_size: int
+    total: int
 
 
 class ScannerIntegrationCreateRequest(BaseModel):
@@ -916,6 +937,52 @@ def create_settings_router(
             results_skipped=summary.results_skipped,
         )
 
+    @router.get(
+        "/scanners/{integration_id}/sync-history",
+        response_model=ScannerSyncHistoryResponse,
+    )
+    async def list_scanner_sync_history(
+        integration_id: UUID,
+        page: int = 1,
+        page_size: int = 10,
+        _auth_user: AuthenticatedUser = scanner_manager_dependency,
+        session: AsyncSession = db_session,
+    ) -> ScannerSyncHistoryResponse:
+        """List recent scanner sync audit events. Requires `scanners:manage`."""
+        if page < 1 or page_size < 1 or page_size > 100:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid pagination parameters",
+            )
+        integration = await session.get(ScannerIntegration, integration_id)
+        if integration is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Scanner integration not found",
+            )
+        base_query = (
+            select(AuditLog)
+            .where(AuditLog.action == "settings.scanner_sync")
+            .where(AuditLog.resource_type == "scanner_integration")
+            .where(AuditLog.resource_id == str(integration_id))
+        )
+        total = await session.scalar(
+            select(func.count()).select_from(base_query.subquery())
+        )
+        events = (
+            await session.scalars(
+                base_query.order_by(AuditLog.occurred_at.desc())
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+            )
+        ).all()
+        return ScannerSyncHistoryResponse(
+            items=[_serialize_scanner_sync_history_event(event) for event in events],
+            page=page,
+            page_size=page_size,
+            total=total or 0,
+        )
+
     return router
 
 
@@ -991,6 +1058,19 @@ def _serialize_scanner_integration(
         last_error=integration.last_error,
         created_at=integration.created_at,
         updated_at=integration.updated_at,
+    )
+
+
+def _serialize_scanner_sync_history_event(event: AuditLog) -> ScannerSyncHistoryEntryResponse:
+    metadata = event.metadata_json or {}
+    return ScannerSyncHistoryEntryResponse(
+        id=event.id,
+        occurred_at=event.occurred_at,
+        outcome=event.outcome,
+        scans_imported=int(metadata.get("scans_imported") or 0),
+        findings_imported=int(metadata.get("findings_imported") or 0),
+        results_skipped=int(metadata.get("results_skipped") or 0),
+        reason=metadata.get("reason"),
     )
 
 
