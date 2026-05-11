@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
+import httpx
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
 from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
 from sqlalchemy import func, select
@@ -181,6 +182,14 @@ class ScannerIntegrationUpdateRequest(BaseModel):
         if not normalized:
             raise ValueError("Scanner integration name is required")
         return normalized
+
+
+class ScannerTestResult(BaseModel):
+    """Internal scanner connectivity result."""
+
+    ok: bool
+    reason: str
+    error: str | None = None
 
 
 _preference_creation_locks: dict[str, threading.Lock] = {}
@@ -676,6 +685,54 @@ def create_settings_router(
         response.status_code = status.HTTP_204_NO_CONTENT
         return response
 
+    @router.post("/scanners/{integration_id}/test", response_model=ScannerIntegrationResponse)
+    async def test_scanner_integration(
+        integration_id: UUID,
+        http_request: Request,
+        csrf_cookie: str | None = Cookie(default=None, alias=settings.csrf_cookie_name),
+        csrf_header: str | None = Header(default=None, alias=settings.csrf_header_name),
+        auth_user: AuthenticatedUser = scanner_manager_dependency,
+        session: AsyncSession = db_session,
+    ) -> ScannerIntegrationResponse:
+        """Test connectivity to a configured scanner. Requires `scanners:manage`."""
+        _validate_csrf(csrf_cookie=csrf_cookie, csrf_header=csrf_header)
+        integration = await session.get(ScannerIntegration, integration_id)
+        if integration is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Scanner integration not found",
+            )
+        if integration.scanner_type != "nessus":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Scanner type is not supported for connectivity testing",
+            )
+
+        test_result = await _test_nessus_connectivity(
+            settings=settings,
+            integration=integration,
+        )
+        integration.last_sync_status = "succeeded" if test_result.ok else "failed"
+        integration.last_sync_at = utc_now()
+        integration.last_error = None if test_result.ok else test_result.error
+        integration.updated_at = utc_now()
+        await _record_settings_event(
+            session=session,
+            http_request=http_request,
+            user=auth_user,
+            action="settings.scanner_test",
+            outcome="success" if test_result.ok else "failure",
+            resource_type="scanner_integration",
+            resource_id=str(integration.id),
+            metadata={
+                "scanner_type": integration.scanner_type,
+                "result": "succeeded" if test_result.ok else "failed",
+                "reason": test_result.reason,
+            },
+        )
+        await session.commit()
+        return _serialize_scanner_integration(integration)
+
     return router
 
 
@@ -782,6 +839,86 @@ def _encrypt_scanner_credentials(
         counter += 1
     ciphertext = bytes(value ^ keystream[index] for index, value in enumerate(plaintext))
     return "v1:" + base64.urlsafe_b64encode(ciphertext).decode("ascii")
+
+
+def _decrypt_scanner_credentials(
+    *,
+    settings: Settings,
+    integration: ScannerIntegration,
+) -> dict[str, str]:
+    encoded = integration.encrypted_credentials_ref.removeprefix("v1:")
+    ciphertext = base64.urlsafe_b64decode(encoded.encode("ascii"))
+    key = settings.auth_secret_key.encode("utf-8")
+    keystream = bytearray()
+    counter = 0
+    while len(keystream) < len(ciphertext):
+        counter_bytes = counter.to_bytes(4, "big")
+        keystream.extend(hmac.digest(key, counter_bytes, "sha256"))
+        counter += 1
+    plaintext = bytes(value ^ keystream[index] for index, value in enumerate(ciphertext))
+    credentials = json.loads(plaintext.decode("utf-8"))
+    if not isinstance(credentials, dict):
+        raise ValueError("Scanner credentials payload is invalid")
+    return {
+        "base_url": str(credentials["base_url"]),
+        "access_key": str(credentials["access_key"]),
+        "secret_key": str(credentials["secret_key"]),
+    }
+
+
+async def _test_nessus_connectivity(
+    *,
+    settings: Settings,
+    integration: ScannerIntegration,
+) -> ScannerTestResult:
+    try:
+        credentials = _decrypt_scanner_credentials(settings=settings, integration=integration)
+    except (ValueError, KeyError, json.JSONDecodeError, UnicodeDecodeError):
+        return ScannerTestResult(
+            ok=False,
+            reason="invalid_credentials",
+            error="Stored scanner credentials are invalid",
+        )
+
+    status_url = f"{credentials['base_url'].rstrip('/')}/server/status"
+    api_key_header = (
+        f"accessKey={credentials['access_key']}; secretKey={credentials['secret_key']}"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10.0, verify=True) as client:
+            response = await client.get(status_url, headers={"X-ApiKeys": api_key_header})
+    except httpx.ConnectError:
+        return ScannerTestResult(
+            ok=False,
+            reason="connect_error",
+            error="Unable to connect to Nessus scanner",
+        )
+    except httpx.TimeoutException:
+        return ScannerTestResult(
+            ok=False,
+            reason="timeout",
+            error="Nessus scanner connection timed out",
+        )
+    except httpx.HTTPError:
+        return ScannerTestResult(
+            ok=False,
+            reason="http_error",
+            error="Nessus scanner request failed",
+        )
+
+    if response.status_code in {401, 403}:
+        return ScannerTestResult(
+            ok=False,
+            reason="authentication_failed",
+            error="Nessus authentication failed",
+        )
+    if response.status_code >= 400:
+        return ScannerTestResult(
+            ok=False,
+            reason="upstream_error",
+            error=f"Nessus scanner returned HTTP {response.status_code}",
+        )
+    return ScannerTestResult(ok=True, reason="ready")
 
 
 def _host_from_url(value: str) -> str:
