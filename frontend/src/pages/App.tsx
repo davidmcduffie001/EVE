@@ -65,10 +65,11 @@ type AppProps = {
   initialSsoStatus?: SsoStatus;
   initialScannerIntegrations?: ScannerIntegration[];
   initialScannerSyncHistory?: Record<string, ScannerSyncHistoryEntry[]>;
+  initialFindings?: FindingReadModel[];
 };
 
 type LoginState = "idle" | "submitting" | "failed" | "disabled" | "mfa" | "mfa-submitting";
-type WorkspaceView = "dashboard" | "settings" | "admin" | "scanners";
+type WorkspaceView = "dashboard" | "settings" | "admin" | "scanners" | "findings";
 type SaveState = "idle" | "saving" | "saved" | "failed";
 type ThemePreference = "dark" | "light";
 type ToastTone = "success" | "error";
@@ -210,6 +211,25 @@ type ScannerSyncHistoryResponse = {
   total: number;
 };
 
+type FindingReadModel = {
+  id: string;
+  title: string;
+  description: string;
+  severity: string;
+  status: string;
+  confidence: string;
+  target_locator: string;
+  target_type: string;
+  scanner_type: string;
+  scanner_finding_id: string | null;
+  port: number | null;
+  protocol: string | null;
+  service_name: string | null;
+  cve_ids: string[];
+  first_seen_at: string;
+  last_seen_at: string;
+};
+
 const emptyAdminUsers: AdminUser[] = [];
 const emptyAdminRoles: AdminRole[] = [];
 const emptyAuditLogEntries: AuditLogEntry[] = [];
@@ -241,7 +261,7 @@ type NavItem = {
 const navItems: NavItem[] = [
   { label: "Dashboard", icon: Gauge, view: "dashboard" },
   { label: "Targets", icon: Target },
-  { label: "Findings", icon: Siren },
+  { label: "Findings", icon: Siren, view: "findings" },
   { label: "Intelligence", icon: Database },
   { label: "Scanners", icon: Radar, view: "scanners" },
   { label: "Administration", icon: UserCog, view: "admin" },
@@ -349,6 +369,7 @@ export function App({
   initialSsoStatus = defaultSsoStatus,
   initialScannerIntegrations = emptyScannerIntegrations,
   initialScannerSyncHistory = {},
+  initialFindings = [],
 }: AppProps) {
   const [user, setUser] = useState<AuthenticatedUser | null>(
     initialUser ?? getPreviewUser(getCurrentSearch(), import.meta.env.DEV),
@@ -396,6 +417,7 @@ export function App({
   const canManageRoles = user ? hasPermission(user, "roles:manage") : false;
   const canReadAudit = user ? hasPermission(user, "audit:read") : false;
   const canManageScanners = user ? hasPermission(user, "scanners:manage") : false;
+  const canReadFindings = user ? hasPermission(user, "findings:read") : false;
   const effectiveActiveView = activeView;
 
   useEffect(() => {
@@ -555,6 +577,8 @@ export function App({
         ? "Administration"
         : effectiveActiveView === "scanners"
           ? "Scanners"
+          : effectiveActiveView === "findings"
+            ? "Findings"
           : "Findings Dashboard";
   const subtitle =
     effectiveActiveView === "settings"
@@ -563,6 +587,8 @@ export function App({
         ? "Manage local users, role assignments, and custom RBAC roles."
         : effectiveActiveView === "scanners"
           ? "Manage scanner integrations, credentials, and connection checks."
+          : effectiveActiveView === "findings"
+            ? "Review normalized findings imported from scanner integrations."
           : "Scanner intake, scope status, and exploit metadata triage.";
 
   return (
@@ -670,6 +696,12 @@ export function App({
             canManageScanners={canManageScanners}
             initialScannerIntegrations={initialScannerIntegrations}
             initialScannerSyncHistory={initialScannerSyncHistory}
+            onNotify={showToast}
+          />
+        ) : effectiveActiveView === "findings" ? (
+          <FindingsWorkspace
+            canReadFindings={canReadFindings}
+            initialFindings={initialFindings}
             onNotify={showToast}
           />
         ) : (
@@ -798,6 +830,104 @@ function DashboardWorkspace() {
           </div>
         </section>
     </>
+  );
+}
+
+function FindingsWorkspace({
+  canReadFindings,
+  initialFindings,
+  onNotify,
+}: {
+  canReadFindings: boolean;
+  initialFindings: FindingReadModel[];
+  onNotify: NotifyHandler;
+}) {
+  const [items, setItems] = useState<FindingReadModel[]>(initialFindings);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadFindings() {
+      if (!canReadFindings) {
+        setItems(initialFindings);
+        return;
+      }
+      try {
+        const response = await fetchJson<AdminListResponse<FindingReadModel>>("/findings");
+        if (!cancelled) {
+          setItems(response.items);
+        }
+      } catch {
+        if (!cancelled) {
+          onNotify({ message: "Unable to load findings.", tone: "error" });
+        }
+      }
+    }
+
+    loadFindings();
+    return () => {
+      cancelled = true;
+    };
+  }, [canReadFindings, initialFindings, onNotify]);
+
+  if (!canReadFindings) {
+    return (
+      <section className="panel authorization-panel">
+        <div className="panel-header">
+          <div>
+            <h2>Not Authorized</h2>
+            <p>You are not authorized to view findings.</p>
+          </div>
+          <ShieldCheck size={18} aria-hidden="true" />
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="panel findings-panel">
+      <div className="panel-header table-header">
+        <div>
+          <h2>Findings</h2>
+          <p>Normalized scanner findings imported from configured scanners.</p>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Severity</th>
+              <th>Finding</th>
+              <th>Target</th>
+              <th>CVE</th>
+              <th>Scanner</th>
+              <th>Confidence</th>
+              <th>Status</th>
+              <th>Last Seen</th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((finding) => (
+              <tr key={finding.id}>
+                <td>
+                  <span className={`severity-pill ${finding.severity.toLowerCase()}`}>
+                    {formatScannerStatus(finding.severity)}
+                  </span>
+                </td>
+                <td>{finding.title}</td>
+                <td>{finding.target_locator}</td>
+                <td>{finding.cve_ids.length > 0 ? finding.cve_ids.join(", ") : "CVE pending"}</td>
+                <td>{finding.scanner_type}</td>
+                <td>{finding.confidence}</td>
+                <td>{formatScannerStatus(finding.status)}</td>
+                <td>{formatTimestamp(finding.last_seen_at)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {items.length === 0 ? <p className="empty-state">No findings imported yet.</p> : null}
+      </div>
+    </section>
   );
 }
 
@@ -1105,7 +1235,7 @@ function ScannersWorkspace({
               type={scannerType === "greenbone" ? "text" : "url"}
               placeholder={
                 scannerType === "greenbone"
-                  ? "tls://openvas.example.test:9390"
+                  ? "unix:///run/gvmd/gvmd.sock"
                   : "https://nessus.example.test:8834"
               }
               required

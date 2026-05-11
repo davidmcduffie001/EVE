@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 import anyio
 from defusedxml import ElementTree
-from gvm.connections import TLSConnection
+from gvm.connections import TLSConnection, UnixSocketConnection
 from gvm.errors import GvmError
 from gvm.protocols.gmp import GMP
 from gvm.transforms import EtreeCheckCommandTransform
@@ -63,6 +63,24 @@ class GreenboneSyncSummary:
     scans_imported: int
     findings_imported: int
     results_skipped: int
+
+
+@dataclass(frozen=True)
+class GreenboneTlsEndpoint:
+    """TCP/TLS GMP endpoint."""
+
+    hostname: str
+    port: int
+
+
+@dataclass(frozen=True)
+class GreenboneUnixEndpoint:
+    """Unix socket GMP endpoint."""
+
+    path: str
+
+
+GreenboneEndpoint = GreenboneTlsEndpoint | GreenboneUnixEndpoint
 
 
 class GreenboneGmpClient:
@@ -140,7 +158,7 @@ class GreenboneGmpClient:
         endpoint = _parse_greenbone_endpoint(self.base_url)
         if endpoint is None:
             raise ValueError("Greenbone GMP endpoint is invalid")
-        connection = TLSConnection(hostname=endpoint[0], port=endpoint[1], timeout=60)
+        connection = _greenbone_connection(endpoint, timeout=60)
         transform = EtreeCheckCommandTransform()
         with GMP(connection=connection, transform=transform) as gmp:
             gmp.authenticate(self.username, self.password)
@@ -153,7 +171,7 @@ class GreenboneGmpClient:
         endpoint = _parse_greenbone_endpoint(self.base_url)
         if endpoint is None:
             raise ValueError("Greenbone GMP endpoint is invalid")
-        connection = TLSConnection(hostname=endpoint[0], port=endpoint[1], timeout=60)
+        connection = _greenbone_connection(endpoint, timeout=60)
         transform = EtreeCheckCommandTransform()
         with GMP(connection=connection, transform=transform) as gmp:
             gmp.authenticate(self.username, self.password)
@@ -180,39 +198,48 @@ async def test_greenbone_connectivity(
 
     return await anyio.to_thread.run_sync(
         _test_greenbone_connectivity_sync,
-        endpoint[0],
-        endpoint[1],
+        endpoint,
         username,
         password,
     )
 
 
-def _parse_greenbone_endpoint(base_url: str) -> tuple[str, int] | None:
+def _parse_greenbone_endpoint(base_url: str) -> GreenboneEndpoint | None:
     candidate = base_url.strip()
     if not candidate:
         return None
+    if candidate.startswith("/"):
+        return GreenboneUnixEndpoint(path=candidate)
     if "://" not in candidate:
         candidate = f"tls://{candidate}"
     parsed = urlparse(candidate)
+    if parsed.scheme == "unix":
+        path = parsed.path or parsed.netloc
+        return GreenboneUnixEndpoint(path=path) if path else None
     if parsed.scheme not in {"tls", "gmp"}:
         return None
     if not parsed.hostname:
         return None
-    return parsed.hostname, parsed.port or 9390
+    return GreenboneTlsEndpoint(hostname=parsed.hostname, port=parsed.port or 9390)
 
 
 def _test_greenbone_connectivity_sync(
-    hostname: str,
-    port: int,
+    endpoint: GreenboneEndpoint,
     username: str,
     password: str,
 ) -> GreenboneConnectivityResult:
-    connection = TLSConnection(hostname=hostname, port=port, timeout=10)
+    connection = _greenbone_connection(endpoint, timeout=10)
     transform = EtreeCheckCommandTransform()
     try:
         with GMP(connection=connection, transform=transform) as gmp:
             gmp.authenticate(username, password)
             gmp.get_version()
+    except PermissionError:
+        return GreenboneConnectivityResult(
+            ok=False,
+            reason="permission_denied",
+            error="Permission denied accessing Greenbone GMP endpoint",
+        )
     except TimeoutError:
         return GreenboneConnectivityResult(
             ok=False,
@@ -232,6 +259,12 @@ def _test_greenbone_connectivity_sync(
             error="Greenbone GMP authentication or request failed",
         )
     return GreenboneConnectivityResult(ok=True, reason="gmp_version_ok")
+
+
+def _greenbone_connection(endpoint: GreenboneEndpoint, *, timeout: int | float):
+    if isinstance(endpoint, GreenboneUnixEndpoint):
+        return UnixSocketConnection(path=endpoint.path, timeout=timeout)
+    return TLSConnection(hostname=endpoint.hostname, port=endpoint.port, timeout=timeout)
 
 
 async def sync_greenbone_scan_results(
