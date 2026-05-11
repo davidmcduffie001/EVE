@@ -521,6 +521,49 @@ def test_scanner_manager_can_sync_greenbone_findings(
     assert events[-1].metadata_json["findings_imported"] == 2
 
 
+def test_scanner_manager_can_view_sync_history(
+    scanner_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scanner sync history exposes recent sync outcomes and counts."""
+    client, _sessionmaker = scanner_client
+    _login(client)
+    created = client.post(
+        "/settings/scanners",
+        json={
+            "name": "Lab OpenVAS",
+            "scanner_type": "greenbone",
+            "base_url": "tls://openvas.example.test:9390",
+            "username": "gmp-user",
+            "password": "greenbone-secret",
+            "enabled": True,
+        },
+        headers=_csrf_headers(client),
+    )
+    integration_id = created.json()["id"]
+
+    async def fake_sync(*, session: AsyncSession, integration: ScannerIntegration, client: Any):
+        from app.services.scanners.greenbone import GreenboneSyncSummary
+
+        return GreenboneSyncSummary(scans_imported=1, findings_imported=2, results_skipped=3)
+
+    monkeypatch.setattr("app.routers.settings.sync_greenbone_integration", fake_sync)
+    sync_response = client.post(
+        f"/settings/scanners/{integration_id}/sync",
+        headers=_csrf_headers(client),
+    )
+    history_response = client.get(f"/settings/scanners/{integration_id}/sync-history")
+
+    assert sync_response.status_code == 200
+    assert history_response.status_code == 200
+    assert history_response.json()["total"] == 1
+    assert history_response.json()["items"][0]["outcome"] == "success"
+    assert history_response.json()["items"][0]["scans_imported"] == 1
+    assert history_response.json()["items"][0]["findings_imported"] == 2
+    assert history_response.json()["items"][0]["results_skipped"] == 3
+    assert "greenbone-secret" not in history_response.text
+
+
 def test_scanner_sync_rejects_nessus_until_import_is_supported(
     scanner_client: tuple[TestClient, async_sessionmaker[AsyncSession]],
 ) -> None:

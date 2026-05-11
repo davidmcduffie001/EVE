@@ -312,6 +312,28 @@ describe("App", () => {
             updated_at: "2026-05-10T08:30:00Z",
           },
         ]}
+        initialScannerSyncHistory={{
+          "scanner-2": [
+            {
+              id: "sync-1",
+              occurred_at: "2026-05-10T09:00:00Z",
+              outcome: "success",
+              scans_imported: 1,
+              findings_imported: 2,
+              results_skipped: 3,
+              reason: null,
+            },
+            {
+              id: "sync-2",
+              occurred_at: "2026-05-10T08:00:00Z",
+              outcome: "failure",
+              scans_imported: 0,
+              findings_imported: 0,
+              results_skipped: 0,
+              reason: "sync_failed",
+            },
+          ],
+        }}
       />,
     );
 
@@ -321,6 +343,10 @@ describe("App", () => {
     expect(markup).toContain("OpenVAS / Greenbone");
     expect(markup).toContain("Test Connection");
     expect(markup).toContain("Sync Now");
+    expect(markup).toContain("Recent Syncs");
+    expect(markup).toContain("2 findings");
+    expect(markup).toContain("1 scan");
+    expect(markup).toContain("Failed");
     expect(markup).toContain("Add Scanner Integration");
     expect(markup).toContain('name="scanner_type"');
     expect(markup).toContain('name="base_url"');

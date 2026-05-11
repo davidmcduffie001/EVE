@@ -803,6 +803,28 @@ td > select {
   align-items: center;
 }
 
+.scanner-sync-history {
+  display: grid;
+  gap: 8px;
+  border-top: 1px solid #263337;
+  padding-top: 12px;
+}
+
+.scanner-sync-history ul {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.scanner-sync-history li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
 .empty-state {
   margin: 0;
   color: #9eb3b9;
